@@ -16,10 +16,10 @@ class RootConstantValue {
 public:
     RootConstantValue() = default;
     RootConstantValue(T value)
-        : value_(value), handle_(std::make_shared<bool>(true))
+        : value_(value)
     {}
 
-    void* GetData() { return static_cast<void*>(&value_); }
+    const void* GetData() const { return static_cast<const void*>(&value_); }
     uint32_t GetSizeIn32BitValues() const { return sizeof(T) / 4; }
     
     const T& GetValue() const { return value_; }
@@ -40,13 +40,13 @@ public:
         return std::bind(&RootConstantValue<T>::AddListener, this);
     }
 
-    RootConstantValueHandle GetHandle() const { return handle_; }
+    // RootConstantValueHandle GetHandle() const { return handle_; }
 
 private:
     std::vector<std::function<void()>> setValueCallbacks_;
     
     // for listeners to check if this object is still alive - without actually storing this object
-    RootConstantValueHandle handle_;
+    //RootConstantValueHandle handle_;
     
     T value_;
 };

@@ -52,8 +52,6 @@ std::weak_ptr<DescriptorHeapAllocation> StaticDescriptorAllocator::Allocate(uint
         allocation->gpuHandle_ = gpuHandle;
     }
 
-    std::weak_ptr<DescriptorHeapAllocation> out = allocation;
     allocations_.push_back(std::move(allocation));
-
-    return out;
+    return allocations_.back();
 }

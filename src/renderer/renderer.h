@@ -8,26 +8,42 @@
 #include <functional>
 #include <memory>
 #include <type_traits>
+#include <string>
 
 #include "root_constant_value.h"
 #include "shader_types.h"
+#include "ninmath/ninmath.h"
 
 class Resource;
 class PipelineState;
-class Shader;
 class GraphicsPipelineState;
 class Renderer;
+class Shader;
+class RenderTarget;
+class VertexBufferBase;
+class IndexBufferBase;
+class DepthBuffer;
 
-struct RendererInitParams {
-    HWND hwnd;
 
-    // TODO: configure the renderer
+struct RendererConfig {
+    DXGI_FORMAT swapChainFormat;
+    uint8_t numBuffers;
+
+    RendererConfig()
+        :
+    swapChainFormat(DXGI_FORMAT_R8G8B8A8_UNORM),
+    numBuffers(2)
+    {}
 };
+
 
 class MemoryAllocator;
 class DescriptorAllocator;
 class ShaderCompiler;
 class PipelineAssembler;
+
+class GraphicsPipelineBuilder;
+class ComputePipelineBuilder;
 
 template<typename T>
 concept IsMemoryAllocatorImpl = requires
@@ -43,122 +59,15 @@ concept IsDescriptorAllocatorImpl = requires
     !std::is_abstract_v<T>;
 };
 
-
-struct GraphicsPipelineBuilder {
-    GraphicsPipelineBuilder& VertexShader(std::string path) { vertexShaderPath_ = path; return *this; }
-    GraphicsPipelineBuilder& HullShader(std::string path) { hullShaderPath_ = path; return *this; }
-    GraphicsPipelineBuilder& DomainShader(std::string path) { domainShaderPath_ = path; return *this; }
-    GraphicsPipelineBuilder& PixelShader(std::string path) { pixelShaderPath_ = path; return *this; }
-    GraphicsPipelineBuilder& RenderTarget(std::shared_ptr<Resource> rt) {
-        assert(!useDefaultRenderTarget_.has_value() && "useDefaultRenderTarget already set.");
-        renderTarget_ = rt;
-        return *this;
-    }
-    GraphicsPipelineBuilder& DepthBuffer(std::shared_ptr<Resource> db) {
-        assert(!useDefaultDepthBuffer_.has_value() && "useDefaultDepthBuffer already set.");
-        depthBuffer_ = db;
-        return *this;
-    }
-    GraphicsPipelineBuilder& UseDefaultRenderTarget() {
-        assert(!renderTarget_ && "renderTarget already set.");
-        useDefaultRenderTarget_ = true;
-        return *this;
-    }
-    GraphicsPipelineBuilder& UseDefaultDepthBuffer() {
-        assert(!depthBuffer_ && "depthBuffer already set.");
-        useDefaultDepthBuffer_ = true;
-        return *this;
-    }
-#define DefineResourceRegisterBindingFunc(type) \
-    GraphicsPipelineBuilder& ## type ##(std::weak_ptr<Resource> res, \
-                                 uint16_t regNum, \
-                                 ResourceBindMethod method = ResourceBindMethod::Automatic, \
-                                 uint16_t regSpace = 0) { \
-        const ShaderRegister shaderReg(ResourceDescriptorType:: ## type ##, regSpace, regNum); \
-        WINRT_ASSERT(!resMap_.contains(shaderReg)); \
-        resMap_.insert({shaderReg, ResourceInfo{.res = res, .bindMethod = method}}); \
-        return *this; \
-    } \
-
-    DefineResourceRegisterBindingFunc(SRV)
-    DefineResourceRegisterBindingFunc(CBV)
-    DefineResourceRegisterBindingFunc(UAV)
-    DefineResourceRegisterBindingFunc(Sampler)
-    
-#undef DefineResourceRegisterBindingFunc
-
-    template <typename T>
-    GraphicsPipelineBuilder& RootConstant(RootConstantValue<T>& val,
-                                          uint16_t regNum,
-                                          uint16_t regSpace = 0) {
-        const ShaderRegister shaderReg(ResourceDescriptorType::Unknown, regSpace, regNum);
-        WINRT_ASSERT(!constantMap_.contains(shaderReg));
-
-        const RootConstantInfo decl {
-            .data = val.GetData(),
-            .num32BitValues = val.GetSizeIn32BitValues()
-        };
-        constantMap_.insert({shaderReg, decl});
-        return *this;
-    }
-
-    GraphicsPipelineBuilder& Sampler(const D3D12_SAMPLER_DESC& desc,
-                                     uint16_t regNum,
-                                     uint16_t regSpace = 0) {
-        
-        const ShaderRegister shaderReg(ResourceDescriptorType::Sampler, regSpace, regNum);
-        WINRT_ASSERT(!samplerMap_.contains(shaderReg));
-
-        samplerMap_.insert({shaderReg, desc});
-        return *this;
-    }
-    
-    GraphicsPipelineBuilder& StaticSampler(const D3D12_SAMPLER_DESC& desc,
-                                     uint16_t regNum,
-                                     uint16_t regSpace = 0) {
-        const ShaderRegister shaderReg(ResourceDescriptorType::Sampler, regSpace, regNum);
-        WINRT_ASSERT(!staticSamplerMap_.contains(shaderReg));
-        
-        staticSamplerMap_.insert({shaderReg, desc});
-        return *this;
-    }
-    
-    std::weak_ptr<PipelineState> Build() {
-        return buildFunc(*this);
-    }
-
-private:
-    typedef std::function<std::weak_ptr<PipelineState>(const GraphicsPipelineBuilder&)> BuildFunction;
-    friend Renderer;
-    GraphicsPipelineBuilder(std::string id, BuildFunction buildFunc)
-        : id(id), buildFunc(buildFunc) {}
-        
-    BuildFunction buildFunc;
-    std::string id;
-    
-    std::shared_ptr<Resource> renderTarget_;
-    std::shared_ptr<Resource> depthBuffer_;
-    
-    std::optional<bool> useDefaultRenderTarget_;
-    std::optional<bool> useDefaultDepthBuffer_;
-    
-    std::optional<std::string> vertexShaderPath_;
-    std::optional<std::string> hullShaderPath_;
-    std::optional<std::string> domainShaderPath_;
-    std::optional<std::string> pixelShaderPath_;
-
-    std::map<ShaderRegister, ResourceInfo> resMap_;
-    std::map<ShaderRegister, RootConstantInfo> constantMap_;
-    std::map<ShaderRegister, D3D12_SAMPLER_DESC> samplerMap_;
-    std::map<ShaderRegister, D3D12_SAMPLER_DESC> staticSamplerMap_;
-};
-
 //
 // Simple, single-threaded renderer
 //
 class Renderer {
 public:
-    static std::shared_ptr<Renderer> CreateRenderer(RendererInitParams params, HRESULT& hr);
+    static const ResourceID SwapChainRenderTargetID;
+    static const ResourceID DefaultDepthStencilTargetID;
+    
+    static std::shared_ptr<Renderer> CreateRenderer(HWND hwnd, RendererConfig params, HRESULT& hr);
 
     template<IsMemoryAllocatorImpl T, class... _Types>
     requires std::is_constructible_v<T, _Types...>
@@ -183,19 +92,29 @@ public:
     void Tick(double deltaTime);
 
     GraphicsPipelineBuilder BuildGraphicsPipeline(std::string id);
+    ComputePipelineBuilder BuildComputePipeline(std::string id);
 
-    struct ComputePipelineParams {
-        std::string computeShaderPath;
-    };
-    void RegisterComputePipeline(std::string id, const ComputePipelineParams& params);
-    
     winrt::com_ptr<ID3D12Device> GetDevice() const { return device_; }
+
+    void ExecutePipeline(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, std::shared_ptr<PipelineState> pso);
+    void ExecuteGraphicsPipeline(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, std::shared_ptr<PipelineState> pso, uint32_t numInstances);
+
+
+    const RootConstantValue<ninmath::Vector2f>& GetScreenSizeRootConstantValue() const { return screenSizeRCV_; }
     
 private:
-    Renderer(RendererInitParams params, HRESULT& hr);
+    Renderer(HWND hwnd, RendererConfig config, HRESULT& hr);
     ~Renderer();
 
     std::weak_ptr<PipelineState> FinalizeGraphicsPipelineBuild(const GraphicsPipelineBuilder& builder);
+    std::weak_ptr<PipelineState> FinalizeComputePipelineBuild(const ComputePipelineBuilder& builder);
+    bool CreateRenderTargetDescriptorAllocation(const RenderTargetGroupID& id);
+    
+    // called in InitializeMemoryAllocator<T>
+    void OnMemoryAllocatorSet();
+
+    void InitializeDefaultDepthBuffers();
+
 
     uint32_t clientWidth_;
     uint32_t clientHeight_;
@@ -220,13 +139,37 @@ private:
     uint32_t numBuffers_;
     
     std::shared_ptr<MemoryAllocator> memoryAllocator_;
+    std::shared_ptr<MemoryAllocator> depthBufferMemoryAllocator_;
+    std::shared_ptr<MemoryAllocator> renderTargetMemoryAllocator_;
+    
     std::shared_ptr<DescriptorAllocator> resourceDescriptorAllocator_;
     std::shared_ptr<DescriptorAllocator> samplerDescriptorAllocator_;
+    std::shared_ptr<DescriptorAllocator> renderTargetDescriptorAllocator_;
+    std::shared_ptr<DescriptorAllocator> depthStencilDescriptorAllocator_;
+    
     std::shared_ptr<ShaderCompiler> shaderCompiler_;
     std::shared_ptr<PipelineAssembler> pipelineAssembler_;
     
     std::map<std::string, std::shared_ptr<PipelineState>> psoMap_;
     std::map<std::string, std::shared_ptr<Shader>> shaderMap_;
+    std::unordered_map<ResourceID, std::shared_ptr<RenderTargetHandle>> renderTargetMap_;
+    std::unordered_map<ResourceID, std::shared_ptr<DepthStencilTargetHandle>> depthStencilTargetMap_;
+
+    // render target group -> array of descriptor allocations (1 per swap chain buffer)
+    std::unordered_map<RenderTargetGroupID,
+                       std::vector<std::weak_ptr<class DescriptorHeapAllocation>>, RenderTargetGroupIDHasher> renderTargetAllocMap_;
+    
+    // depth buffer -> array of descriptor allocations (1 per swap chain buffer)
+    std::unordered_map<ResourceID,
+                       std::vector<std::weak_ptr<class DescriptorHeapAllocation>>> depthBufferAllocMap_;
+
+    // TODO: custom non-render target resource (e.g. UAV) where there's 1 allocation per swap chain buffer
+
+    RendererConfig config_;
+    D3D12_RECT scissorRect_;
+    D3D12_VIEWPORT viewport_;
+
+    RootConstantValue<ninmath::Vector2f> screenSizeRCV_;
 };
 
 template<IsMemoryAllocatorImpl T, class... _Types>
@@ -239,6 +182,8 @@ std::shared_ptr<T> Renderer::InitializeMemoryAllocator(_Types&&... args) {
     // template is basically the definition of std::make_shared
     std::shared_ptr<T> newAllocator = std::make_shared<T>(std::forward<_Types>(args)...);
     memoryAllocator_ = newAllocator;
+    
+    OnMemoryAllocatorSet();
 
     return newAllocator;
 }

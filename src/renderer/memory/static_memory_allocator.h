@@ -31,9 +31,14 @@ public:
     StaticMemoryAllocator(winrt::com_ptr<ID3D12Device> device);
     ~StaticMemoryAllocator();
     
-    void Commit() override;
     void Update(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, winrt::com_ptr<ID3D12CommandQueue> cmdQueue);
     bool HasWork() override;
+    
+
+protected:
+    void CommitImplementation() override;
+    void OnResourceCreated(std::shared_ptr<Resource> newResource) override;
+    void InitializeDynamicResource(std::shared_ptr<Resource> res); 
     
 private:
     void WaitForUploadComplete(winrt::com_ptr<ID3D12Fence> fence, std::vector<std::shared_ptr<Resource>> resUploading);

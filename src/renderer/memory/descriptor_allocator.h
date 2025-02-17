@@ -18,6 +18,8 @@ public:
     bool GetCPUDescriptorHandleOffsetted(uint32_t offset, D3D12_CPU_DESCRIPTOR_HANDLE& handle) const;
     bool GetGPUDescriptorHandleOffsetted(uint32_t offset, D3D12_GPU_DESCRIPTOR_HANDLE& handle) const;
 
+    uint32_t GetAllocationSize() const { return size_; }
+
 private:
     friend DescriptorAllocator;
     friend StaticDescriptorAllocator;
@@ -43,6 +45,7 @@ public:
     
     D3D12_CPU_DESCRIPTOR_HANDLE GetCPUHeapBase() const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHeapBase() const;
+    winrt::com_ptr<ID3D12DescriptorHeap> GetDescriptorHeap() const { return descriptorHeap_; }
 
 protected:
     winrt::com_ptr<ID3D12DescriptorHeap> descriptorHeap_;

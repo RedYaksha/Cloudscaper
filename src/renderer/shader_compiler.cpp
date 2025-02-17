@@ -16,8 +16,7 @@ ShaderCompiler::ShaderCompiler() {
 }
 
 ShaderCompiler::~ShaderCompiler() {
-    // stop all threads
-    threadPool_->Stop();
+    std::cout << "Destroying shader compiler..." << std::endl;
 }
 
 bool ShaderCompiler::Enqueue(std::weak_ptr<Shader> shader) {
@@ -39,7 +38,8 @@ void ShaderCompiler::Flush() {
                                     this,
                                     shader, 
                                     std::ref(shaderPromise)));
-                                    
+
+        std::cout << "Flushing shader compiler" << std::endl;
         threadPool_->AddTask(std::move(task));
     }
 }
@@ -59,6 +59,13 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
     }
 
     // compile
+    
+    // Relevant docs for dxc.exe
+    // -I <value>              Add directory to include search path
+    // -T <profile>            Set target profile.
+    // -E <value>              Entry point name
+    // -D <value>              Define macro
+    
     HRESULT hr;
 
     winrt::com_ptr<IDxcUtils> utils;
@@ -98,7 +105,7 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
     }
 
     profileArg += L"_6_0";
-
+    
     std::vector<LPCWSTR> compileArgs {
         L"-E", // entry point
         L"main",
@@ -109,6 +116,17 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
         DXC_ARG_PACK_MATRIX_ROW_MAJOR,
         DXC_ARG_DEBUG,
     };
+
+    std::vector<std::wstring> macroStrings;
+    macroStrings.resize(shader->macros_.size());
+
+    uint32_t curMacroInd = 0;
+    for(const auto& [key, val] : shader->macros_) {
+        macroStrings[curMacroInd] = L"-D" + key + L"=" + val;
+        compileArgs.push_back(macroStrings[curMacroInd].c_str());
+
+        curMacroInd++;
+    }
 
     winrt::com_ptr<IDxcIncludeHandler> includeHandler;
     utils->CreateDefaultIncludeHandler(includeHandler.put());
@@ -136,7 +154,8 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
         const LPCSTR errorMessage = errors->GetStringPointer();
         Shader::State out = Shader::State::Error(errorMessage);
         shaderPromise.set_value(out);
-        
+
+        std::cout << "Shader Compiler: Failed to compile " << sourceFile << std::endl;
         std::cout << errorMessage << std::endl;
         return out;
     }
@@ -145,6 +164,14 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
     winrt::com_ptr<IDxcBlob> reflectionBlob;
     result->GetOutput(DXC_OUT_REFLECTION, __uuidof(IDxcBlob), reflectionBlob.put_void(), NULL);
 
+    winrt::com_ptr<IDxcBlob> pdbBlob;
+    result->GetOutput(DXC_OUT_PDB, __uuidof(IDxcBlob), pdbBlob.put_void(), NULL);
+
+    // save pdb to file in shaders/compile/
+    std::string pdbSource = sourceFile + ".pdb";
+    HANDLE fileHandle = CreateFileA(pdbSource.c_str(), GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    BOOL writeSuccess = WriteFile(fileHandle, pdbBlob->GetBufferPointer(), pdbBlob->GetBufferSize(), NULL, NULL);
+    WINRT_ASSERT(writeSuccess);
     
     winrt::com_ptr<IDxcBlob> rootSigBlob;
     result->GetOutput(DXC_OUT_ROOT_SIGNATURE, __uuidof(IDxcBlob), rootSigBlob.put_void(), NULL);
@@ -238,14 +265,21 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
     // - Vertex Buffer Layout
     //      - can be used for runtime type checking when binding vertex buffers
 
+    winrt::com_ptr<IDxcBlob> shaderBlob;
+    hr = result->GetOutput(DXC_OUT_OBJECT, __uuidof(IDxcBlob), shaderBlob.put_void(), NULL);
+    WINRT_ASSERT(SUCCEEDED(hr));
+
     std::shared_ptr<Shader::CompilationData> compilationData = std::make_shared<Shader::CompilationData>();
     compilationData->inputLayoutElems = inputLayoutElems;
     compilationData->rootParamUsage = rootParamUsage;
     compilationData->rootSigBlob = rootSigBlob;
+    compilationData->shaderBlob = shaderBlob;
 
     Shader::State out = Shader::State::Ok();
     out.compileData = compilationData;
     shaderPromise.set_value(out);
+
+    std::cout << "Shader compilation complete: " << sourceFile << std::endl;
     return out;
 }
 

@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <winrt/windows.foundation.h>
+#include <windowsx.h>
 
 LRESULT CALLBACK WindowProc2(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -80,6 +81,63 @@ LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 			}
 			else {
 				std::cout << "Max/min" << std::endl;
+			}
+		}
+		break;
+	case WM_KEYDOWN:
+		{
+			KeyEvent e;
+			e.type = KeyEventType::Down;
+			e.key = wParam;
+			
+			for(const auto& func : keyDownCallbacks_) {
+				func(e);
+			}
+		}
+		break;
+	case WM_KEYUP:
+		{
+			KeyEvent e;
+			e.type = KeyEventType::Up;
+			e.key = wParam;
+			
+			for(const auto& func : keyDownCallbacks_) {
+				func(e);
+			}
+		}
+		break;
+	case WM_MOUSEMOVE:
+		{
+			MouseEvent e;
+			e.posX = GET_X_LPARAM(lParam);
+			e.posY = GET_Y_LPARAM(lParam);
+			// TODO
+			e.deltaX = 0;
+			e.deltaY = 0;
+
+			for(const auto& func : mouseMovedCallbacks_) {
+				func(e);
+			}
+			
+		}
+		break;
+	case WM_LBUTTONDOWN:
+		{
+			MouseButtonEvent e;
+			e.btn = MouseButton::Left;
+			
+			for(const auto& func : mouseButtonDownCallbacks_) {
+				func(e);
+			}
+		}
+		break;
+	case WM_LBUTTONUP:
+		{
+			MouseButtonEvent e;
+			e.btn = MouseButton::Left;
+			
+			for(const auto& func : mouseButtonUpCallbacks_) {
+				func(e);
 			}
 		}
 		break;

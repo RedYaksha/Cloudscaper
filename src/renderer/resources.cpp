@@ -10,32 +10,74 @@ winrt::com_ptr<ID3D12Resource> Resource::GetNativeResource() {
     return res_;
 }
 
-Texture2D::Texture2D(const Config& config)
-    : config_(config) {
+bool Resource::CreateDescriptorByResourceType(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                              ResourceDescriptorType descriptorType) const {
+    switch(descriptorType) {
+    case ResourceDescriptorType::SRV:
+        return CreateShaderResourceView(cpuHandle);
+    case ResourceDescriptorType::UAV:
+        return CreateUnorderedAccessView(cpuHandle);
+    case ResourceDescriptorType::CBV:
+        return CreateConstantBufferView(cpuHandle);
+    case ResourceDescriptorType::Sampler:
+        return CreateSamplerView(cpuHandle);
+    case ResourceDescriptorType::RenderTarget:
+        return CreateRenderTargetView(cpuHandle);
+    case ResourceDescriptorType::DepthStencil:
+        return CreateDepthStencilView(cpuHandle);
+    default:
+        return false;
+    }
+}
+
+void Resource::ChangeState(D3D12_RESOURCE_STATES newState, std::vector<D3D12_RESOURCE_BARRIER>& barriers) {
+    if(newState == state_) {
+        return;
+    }
+
+    const D3D12_RESOURCE_STATES oldState = state_;
+    
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(res_.get(),
+        oldState,
+        newState);
+    
+    barriers.push_back(barrier);
+    
+    state_ = newState;
+}
+
+void Resource::ChangeStateDirect(D3D12_RESOURCE_STATES newState, winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) {
+    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    ChangeState(newState, barriers);
+
+    if(barriers.size() > 0) {
+        cmdList->ResourceBarrier(barriers.size(), barriers.data());
+    }
+}
+
+Texture2D::Texture2D(DXGI_FORMAT format, uint32_t width, uint32_t height, bool useAsUAV, D3D12_RESOURCE_STATES initialState)
+    : format_(format), width_(width), height_(height), useAsUAV_(useAsUAV) {
     
     isReady_ = false;
-    state_ = D3D12_RESOURCE_STATE_COPY_DEST;
+    state_ = initialState;
 }
 
 D3D12_RESOURCE_DESC Texture2D::CreateResourceDesc() const {
     CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(
-                                    config_.format, config_.width, config_.height);
+                                    format_, width_, height_);
 
-    
-    
+    if(useAsUAV_) {
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    }
+
     return desc;
 }
 
-bool Texture2D::CreateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) const {
-    WINRT_ASSERT(res_);
+bool Texture2D::CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+    winrt::com_ptr<ID3D12Device> device) const {
     
-    HRESULT hr;
-
-    winrt::com_ptr<ID3D12Device> device;
-    res_->GetDevice(__uuidof(ID3D12Device), device.put_void());
-
     D3D12_SHADER_RESOURCE_VIEW_DESC desc;
-    desc.Format = config_.format;
+    desc.Format = format_;
     desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     // TODO
@@ -48,9 +90,21 @@ bool Texture2D::CreateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) const {
     return true;
 }
 
+bool Texture2D::CreateUnorderedAccessViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+    winrt::com_ptr<ID3D12Device> device) const {
 
-ImageTexture2D::ImageTexture2D(const Config& config)
-    : filePath_(config.filePath) {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
+    desc.Format = format_;
+    desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    desc.Texture2D.MipSlice = 0;
+    desc.Texture2D.PlaneSlice = 0;
+
+    device->CreateUnorderedAccessView(res_.get(), nullptr, &desc, cpuHandle);
+    return true;
+}
+
+ImageTexture2D::ImageTexture2D(std::string filePath)
+    : filePath_(filePath) {
 
     // check if file exists
     const DWORD fileAttrs = GetFileAttributes(filePath_.c_str());
@@ -64,20 +118,14 @@ ImageTexture2D::ImageTexture2D(const Config& config)
 
     // assume 32 bpp and DXGI_FORMAT_R8G8B8A8
     // StaticMemoryAllocator will allocate width*height amount of bytes
-    config_.width = (uint32_t) width;
-    config_.height = (uint32_t) height;
+    width_ = (uint32_t) width;
+    height_ = (uint32_t) height;
 
     // TODO: more complex formats according to metadata?
     // See WICTextureLoader::CreateTextureFromWIC
-    config_.format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
+    format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
     state_ = D3D12_RESOURCE_STATE_COMMON;
-}
-
-D3D12_RESOURCE_DESC ImageTexture2D::CreateUploadResourceDesc() const {
-    // CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer()
-    return D3D12_RESOURCE_DESC{};
-    
+    useAsUAV_ = false;
 }
 
 void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) {
@@ -103,11 +151,11 @@ void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdL
     
     // resolve size
     // adding 7 dividing 8 => rounds up for a valid byte count
-    uint32_t rowPitch = (config_.width * bpp + 7u) / 8u;
-    uint32_t totalBytes = rowPitch * config_.height;
+    uint32_t rowPitch = (width_ * bpp + 7u) / 8u;
+    uint32_t totalBytes = rowPitch * height_;
 
     // prepare srcData container, receiving the data
-    srcData.resize(totalBytes);
+    srcData_.resize(totalBytes);
 
     D3D12_RANGE readRange = {0, 0};
     hr = uploadRes_->Map(0, &readRange, &uploadSrc_);
@@ -201,3 +249,125 @@ void ImageTexture2D::FreeSourceData() {
 
 }
 
+RenderTarget::RenderTarget(winrt::com_ptr<ID3D12Resource> res, D3D12_RESOURCE_STATES initState) {
+    res_ = res;
+    state_ = initState;
+}
+
+bool RenderTarget::CreateRenderTargetViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+    winrt::com_ptr<ID3D12Device> device) const {
+    
+    D3D12_RESOURCE_DESC resDesc = res_->GetDesc();
+    
+    D3D12_RENDER_TARGET_VIEW_DESC desc;
+    desc.Format = resDesc.Format;
+
+    // TODO, perhaps another type, should we really extend from Texture2D
+    // but how about re-using this resource as a Texture2D
+    desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    
+    // TODO configure
+    desc.Texture2D.MipSlice = 0;
+    desc.Texture2D.PlaneSlice = 0;
+
+    device->CreateRenderTargetView(res_.get(), &desc, cpuHandle);
+
+    return true;
+}
+
+DepthBuffer::DepthBuffer(DepthBufferFormat format, uint32_t width, uint32_t height) {
+    format_ = (DXGI_FORMAT) format;
+    width_ = width;
+    height_ = height;
+    state_ = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    useAsUAV_ = false;
+}
+
+D3D12_RESOURCE_DESC DepthBuffer::CreateResourceDesc() const {
+    D3D12_RESOURCE_DESC desc = Texture2D::CreateResourceDesc();
+    desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    return desc;
+}
+
+bool DepthBuffer::GetOptimizedClearValue(D3D12_CLEAR_VALUE& clearVal) const {
+    clearVal.Format = (DXGI_FORMAT) format_;
+    clearVal.DepthStencil = {1.0f, 0};
+    return true;
+}
+
+bool DepthBuffer::CreateDepthStencilViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                       winrt::com_ptr<ID3D12Device> device) const {
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC desc;
+    desc.Format = format_;
+    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    desc.Texture2D.MipSlice = 0;
+    desc.Flags = D3D12_DSV_FLAG_NONE;
+    
+    device->CreateDepthStencilView(res_.get(), &desc, cpuHandle);
+    return true;
+}
+
+
+void StaticBuffer::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) {
+    winrt::check_pointer(uploadRes_.get());
+
+    const void* srcData = GetSourceData();
+    const uint64_t srcSizeInBytes = GetSizeInBytes();
+
+    D3D12_RANGE readRange = {0, 0};
+    void* mappedData;
+    uploadRes_->Map(0, &readRange, &mappedData);
+    memcpy(mappedData, GetSourceData(), srcSizeInBytes);
+    uploadRes_->Unmap(0, nullptr);
+
+    cmdList->CopyBufferRegion(res_.get(), 0, uploadRes_.get(), 0, srcSizeInBytes);
+}
+
+
+D3D12_RESOURCE_DESC DynamicBuffer::CreateResourceDesc() const {
+    const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(resourceSizeInBytes_, D3D12_RESOURCE_FLAG_NONE);
+    return desc;
+}
+
+void DynamicBuffer::HandleDynamicUpload() {
+    memcpy(dynamicResMappedPtr_, GetSourceData(), GetSizeInBytes());
+}
+
+void DynamicBuffer::UpdateGPUData() {
+    // call the callback (should have been set when this resource was made)
+    //
+    // This makes sure we have an up to date native resource, and a valid mapped pointer
+    // - if the source data is larger than the destination, then the gpu resource will expand
+    //
+    if(GetSizeInBytes() > resourceSizeInBytes_) {
+        resourceSizeInBytes_ *= 2;
+        initializeDynamicResourceFunc_();
+    }
+    
+    // memcpy the source to mapped dest
+    HandleDynamicUpload();
+}
+
+bool IndexBufferBase::CreateIndexBufferDescriptor(D3D12_INDEX_BUFFER_VIEW& outView) {
+    outView.BufferLocation = res_->GetGPUVirtualAddress();
+    outView.SizeInBytes = GetSizeInBytes();
+
+    DXGI_FORMAT format;
+    switch(GetStrideInBytes()) {
+    case sizeof(uint8_t):
+        format = DXGI_FORMAT_R8_UINT;
+        break;
+    case sizeof(uint16_t):
+        format = DXGI_FORMAT_R16_UINT;
+        break;
+    case sizeof(uint32_t):
+        format = DXGI_FORMAT_R32_UINT;
+        break;
+    default:
+        return false;
+    }
+
+    outView.Format = format;
+    return true;
+}

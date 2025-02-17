@@ -8,11 +8,15 @@ StaticMemoryAllocator::StaticMemoryAllocator(winrt::com_ptr<ID3D12Device> device
 
 }
 
-void StaticMemoryAllocator::Commit() {
+void StaticMemoryAllocator::CommitImplementation() {
     // go through all resources and see how big our D3D12_HEAP_TYPE_DEFAULT should be
     std::vector<D3D12_RESOURCE_DESC> resourceDescs;
     
-    for(auto [id, res] : resource_map_) {
+    for(auto [id, res] : resourceMap_) {
+        if(res->IsDynamic()) {
+            continue;
+        }
+        
         D3D12_RESOURCE_DESC resDesc = res->CreateResourceDesc();
         resourceDescs.push_back(resDesc);
     }
@@ -45,7 +49,11 @@ void StaticMemoryAllocator::Commit() {
     uint64_t defaultOffset = 0;
     uint64_t uploadOffset = 0;
 
-    for(auto [id, res] : resource_map_) {
+    for(auto [id, res] : resourceMap_) {
+        if(res->IsDynamic()) {
+            continue;
+        }
+        
         D3D12_RESOURCE_DESC resDesc = res->CreateResourceDesc();
 
         D3D12_CLEAR_VALUE clearVal;
@@ -97,7 +105,40 @@ void StaticMemoryAllocator::Commit() {
 
             uploadQueue_.push(res);
         }
+        else {
+            // no upload needed, can be use right away
+            res->SetIsReady(true);
+        }
     }
+}
+
+void StaticMemoryAllocator::OnResourceCreated(std::shared_ptr<Resource> newResource) {
+    //
+    if(newResource->IsDynamic()) {
+        // we give the resource the function to call, so if it wants to reinitialize its data, then it can
+        newResource->initializeDynamicResourceFunc_ = std::bind(&StaticMemoryAllocator::InitializeDynamicResource, this, newResource);
+        InitializeDynamicResource(newResource);
+        
+        newResource->HandleDynamicUpload();
+    }
+}
+
+void StaticMemoryAllocator::InitializeDynamicResource(std::shared_ptr<Resource> res) {
+    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+    D3D12_RESOURCE_DESC resDesc = res->CreateResourceDesc();
+
+    HRESULT hr = device_->CreateCommittedResource(&heapProps,
+                                                 D3D12_HEAP_FLAG_NONE,
+                                                 &resDesc,
+                                                 D3D12_RESOURCE_STATE_COMMON,
+                                                 nullptr,
+                                                 __uuidof(ID3D12Resource),
+                                                 res->res_.put_void()
+                                                 );
+    WINRT_ASSERT(SUCCEEDED(hr));
+
+    D3D12_RANGE readRange = {0, 0};
+    res->res_->Map(0, &readRange, &res->dynamicResMappedPtr_);
 }
 
 void StaticMemoryAllocator::Update(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, winrt::com_ptr<ID3D12CommandQueue> cmdQueue) {
@@ -147,6 +188,8 @@ bool StaticMemoryAllocator::HasWork() {
 void StaticMemoryAllocator::WaitForUploadComplete(winrt::com_ptr<ID3D12Fence> fence, std::vector<std::shared_ptr<Resource>> resUploading) {
 	HANDLE fe = CreateEvent(NULL, FALSE, FALSE, NULL);
 	assert(fe);
+
+    std::cout << "starting upload fence" << std::endl;
 	
 	if(fence->GetCompletedValue() < 1) {
 		fence->SetEventOnCompletion(1, fe);
@@ -161,5 +204,6 @@ void StaticMemoryAllocator::WaitForUploadComplete(winrt::com_ptr<ID3D12Fence> fe
 }
 
 StaticMemoryAllocator::~StaticMemoryAllocator() {
+    std::cout << "Destroying memory allocator..." << std::endl;
     
 }

@@ -19,6 +19,13 @@ set( SOURCE_FILES
     
     renderer/multithreading/thread_pool.cpp
     
+# ui 
+    ui/ui_framework.cpp
+    
+    ui/widgets/widget.cpp
+    ui/widgets/button.cpp
+    ui/widgets/layout.cpp
+    
 # application
     application/application.cpp
     application/window.cpp
@@ -32,6 +39,7 @@ set( SOURCE_FILES
 set( HEADER_FILES 
 # renderer
     renderer/renderer.h
+    renderer/pipeline_builder.h
     renderer/pipeline_state.h
     renderer/resources.h
     renderer/shader.h
@@ -50,9 +58,23 @@ set( HEADER_FILES
     
     renderer/root_constant_value.h
     
+# ui 
+    ui/ui_framework.h
+    ui/ui_primitives.h
+    
+    ui/widgets/widget.h
+    ui/widgets/button.h
+    ui/widgets/layout.h
+
+# ninmath 
+    ninmath/ninmath.h
+    ninmath/noise.h
+    
 # application
     application/application.h
     application/window.h
+    
+    
     
 # cloudscaper
     cloudscaper.h
@@ -61,6 +83,18 @@ set( HEADER_FILES
 set( SHADER_FILES 
     shaders/vertex_shader.hlsl
     shaders/pixel_shader.hlsl
+    shaders/test_cs.hlsl
+    
+# atmosphere
+    shaders/atmosphere/atmosphere_common.hlsl
+    shaders/atmosphere/multiscattering_lut_cs.hlsl
+    shaders/atmosphere/sky_raymarch_quad_ps.hlsl
+    shaders/atmosphere/skyview_lut_cs.hlsl
+    shaders/atmosphere/transmittance_lut_cs.hlsl
+    
+# ui
+    shaders/ui/quad_vs.hlsl
+    shaders/ui/quad_ps.hlsl
 )
 
 set_source_files_properties(${SHADER_FILES} PROPERTIES LANGUAGE HLSL)

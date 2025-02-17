@@ -10,16 +10,6 @@
 
 class ShaderCompiler;
 
-enum class ShaderType {
-    Vertex,
-    Hull,
-    Domain,
-    Pixel,
-    
-    Compute,
-    
-    NumShaderTypes
-};
 
 class Shader {
 public:
@@ -37,6 +27,7 @@ public:
         winrt::com_ptr<IDxcBlob> rootSigBlob;
         RootParameterUsageMap rootParamUsage;
         std::set<VertexInputLayoutElem> inputLayoutElems;
+        winrt::com_ptr<IDxcBlob> shaderBlob;
     };
 
     struct State {
@@ -84,6 +75,9 @@ private:
     friend ShaderCompiler;
     std::promise<Shader::State> promise_;
     std::shared_future<Shader::State> future_;
+
+protected:
+    std::unordered_map<std::wstring, std::wstring> macros_;
 };
 
 class VertexShader : public Shader {
@@ -118,6 +112,28 @@ public:
     DomainShader(std::string sourceFile)
         : Shader(sourceFile, ShaderType::Domain)
     {}
+    
+private:
+};
+
+class GeometryShader : public Shader {
+public:
+    GeometryShader(std::string sourceFile)
+        : Shader(sourceFile, ShaderType::Geometry)
+    {}
+    
+private:
+};
+
+class ComputeShader : public Shader {
+public:
+    ComputeShader(std::string sourceFile, uint32_t threadCountX, uint32_t threadCountY, uint32_t threadCountZ)
+        : Shader(sourceFile, ShaderType::Compute) {
+
+        macros_[L"THREAD_COUNT_X"] = std::to_wstring(threadCountX);
+        macros_[L"THREAD_COUNT_Y"] = std::to_wstring(threadCountY);
+        macros_[L"THREAD_COUNT_Z"] = std::to_wstring(threadCountZ);
+    }
     
 private:
 };

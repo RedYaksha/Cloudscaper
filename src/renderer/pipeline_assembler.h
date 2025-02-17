@@ -15,6 +15,7 @@ public:
     PipelineAssembler(winrt::com_ptr<ID3D12Device> device,
                     const std::weak_ptr<DescriptorAllocator>& resourceDescriptorAllocator,
                     const std::weak_ptr<DescriptorAllocator>& samplerDescriptorAllocator);
+    ~PipelineAssembler();
 
     bool Enqueue(std::weak_ptr<PipelineState> pso);
     void Flush();
@@ -23,6 +24,17 @@ private:
     PipelineState::State AssemblePipeline(std::weak_ptr<PipelineState> pso, std::promise<PipelineState::State>& statePromise);
     void AssembleGraphicsPipeline(std::weak_ptr<GraphicsPipelineState> pso, std::promise<PipelineState::State>& statePromise);
     void AssembleComputePipeline(std::weak_ptr<ComputePipelineState> pso, std::promise<PipelineState::State>& statePromise);
+
+    std::vector<D3D12_INPUT_ELEMENT_DESC> CreateGraphicsInputLayoutDesc(std::shared_ptr<GraphicsPipelineState> pso);
+
+    winrt::com_ptr<ID3D12PipelineState> CreateD3DGraphicsPipeline(std::shared_ptr<GraphicsPipelineState> pso,
+                                                                  ID3D12RootSignature* rootSig,
+                                                                  D3D12_INPUT_LAYOUT_DESC inputLayout);
+    
+    winrt::com_ptr<ID3D12PipelineState> CreateD3DComputePipeline(std::shared_ptr<ComputePipelineState> pso,
+                                                                 ID3D12RootSignature* rootSignature);
+    
+    void InitializeVertexAndIndexBuffers(std::shared_ptr<GraphicsPipelineState> pso);
     
     
     

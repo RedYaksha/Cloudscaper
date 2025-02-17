@@ -13,6 +13,8 @@
 #include "shader_compiler.h"
 #include "memory/memory_allocator.h"
 #include "memory/static_descriptor_allocator.h"
+#include "pipeline_builder.h"
+#include "memory/static_memory_allocator.h"
 
 #ifndef APP_D3D_MININMUM_FEATURE_LEVEL
 #define APP_D3D_MINIMUM_FEATURE_LEVEL D3D_FEATURE_LEVEL_12_0
@@ -24,6 +26,9 @@ ID3D12Device6, ID3D12Device7, ID3D12Device8, ID3D12Device9, ID3D12Device10>;
 
 template<typename T>
 concept IsIDXGISwapChain1 = IsAnyOf<T, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain3, IDXGISwapChain4>;
+
+const ResourceID Renderer::SwapChainRenderTargetID = "DefaultSwapChainRenderTarget";
+const ResourceID Renderer::DefaultDepthStencilTargetID = "DefaultDepthStencilTarget";
 
 namespace dx12_init {
 	void EnableDebugLayer(HRESULT& hr);
@@ -42,15 +47,23 @@ namespace dx12_init {
 	                                  uint32_t numBuffers, DXGI_FORMAT format, HRESULT& hr);
 } // dx12_init
 
-std::shared_ptr<Renderer> Renderer::CreateRenderer(RendererInitParams params, HRESULT& hr) {
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::UseDefaultRenderTarget(uint16_t slotIndex) {
+	return RenderTarget(Renderer::SwapChainRenderTargetID, slotIndex);
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::UseDefaultDepthBuffer() {
+	return DepthBuffer(Renderer::DefaultDepthStencilTargetID);
+}
+
+std::shared_ptr<Renderer> Renderer::CreateRenderer(HWND hwnd, RendererConfig params, HRESULT& hr) {
 	// https://stackoverflow.com/a/20961251
 	struct MakeSharedEnabler : Renderer {
-		MakeSharedEnabler(RendererInitParams params, HRESULT& hr)
-		: Renderer(params, hr)
+		MakeSharedEnabler(HWND hwnd, RendererConfig params, HRESULT& hr)
+		: Renderer(hwnd, params, hr)
 		{}
 	};
 	
-	std::shared_ptr<Renderer> renderer = std::make_shared<MakeSharedEnabler>(params, hr);
+	std::shared_ptr<Renderer> renderer = std::make_shared<MakeSharedEnabler>(hwnd, params, hr);
 	
 	if(FAILED(hr)) {
 		return nullptr;
@@ -58,16 +71,83 @@ std::shared_ptr<Renderer> Renderer::CreateRenderer(RendererInitParams params, HR
 	return renderer;
 }
 
-void Renderer::RegisterComputePipeline(std::string id, const ComputePipelineParams& params) {
+void Renderer::ExecutePipeline(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, std::shared_ptr<PipelineState> pso) {
+	if(!pso->IsStateReady()) {
+		std::cout << "pso not assembled" << std::endl;
+		return;
+	}
 	
+	if(!pso->IsReadyAndOk()) {
+		// std::cout << "pso not assembled correctly..." << std::endl;
+		return;
+	}
+	
+	// check all dependent resources (vertex buffers, textures, etc.), abort if not ready
+	// check that all render target resource states are OK, otherwise barriers are needed
+	if(!pso->AreAllResourcesReady()) {
+		std::cout << "pso resources not ready..." << std::endl;
+		return;
+	}
+
+
+	// set render targets (via descriptor)
+	// - the descriptors linked to the current backbuffer index
+	// - the descriptors should've been made when creating the pipeline
+	// barrier if needed
+	const std::vector<ResourceID>& ids = pso->rtGroupId_.GetIDs();
+
+	std::vector<D3D12_RESOURCE_BARRIER> barriers;
+	
+	// for each render target id, find the RenderTarget for the current back buffer
+	// and change its state (if different)
+	for(const auto& id : ids) {
+		WINRT_ASSERT(renderTargetMap_.contains(id));
+		std::shared_ptr<RenderTargetHandle> rtHandle = renderTargetMap_[id];
+		std::shared_ptr<RenderTarget> rt = rtHandle->resources[curBackBufferIndex_];
+		rt->ChangeState(D3D12_RESOURCE_STATE_RENDER_TARGET, barriers);
+	}
+
+	if(barriers.size() > 0) {
+		cmdList->ResourceBarrier(barriers.size(), barriers.data());
+	}
+
+	// Output Merger, set render target & depth buffer (if any)
+	if(pso->rtGroupId_.GetIDs().size() > 0) {
+		D3D12_CPU_DESCRIPTOR_HANDLE rtDescriptor;
+		std::shared_ptr<DescriptorHeapAllocation> rtAlloc = renderTargetAllocMap_[pso->rtGroupId_][curBackBufferIndex_].lock();
+		const uint32_t numRenderTargets = rtAlloc->GetAllocationSize();
+		rtAlloc->GetCPUDescriptorHandle(rtDescriptor);
+
+		D3D12_CPU_DESCRIPTOR_HANDLE depthDescriptor;
+		D3D12_CPU_DESCRIPTOR_HANDLE* ptrDepthDescriptor = nullptr;
+		if(depthStencilTargetMap_.contains(pso->depthId_)) {
+			depthBufferAllocMap_[pso->depthId_][curBackBufferIndex_].lock()->GetCPUDescriptorHandle(depthDescriptor);
+			ptrDepthDescriptor = &depthDescriptor;
+		}
+		
+		cmdList->OMSetRenderTargets(numRenderTargets, &rtDescriptor, true, ptrDepthDescriptor);
+	}
+	
+	// execute pipeline...
+	// 1. Set root signature
+	// 2. Graphics => bind vertex buffer(s), index buffer, and draw
+	//    Compute => dispatch
+	pso->Execute(cmdList);
 }
 
-Renderer::Renderer(RendererInitParams params, HRESULT& hr)
-: cmdListActive_(false), fenceValue_(0) {
-	numBuffers_ = 2;
+void Renderer::ExecuteGraphicsPipeline(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList,
+	std::shared_ptr<PipelineState> pso, uint32_t numInstances) {
+	
+	std::static_pointer_cast<GraphicsPipelineState>(pso)->SetNumInstances(numInstances);
+	ExecutePipeline(cmdList, pso);
+}
+
+Renderer::Renderer(HWND hwnd, RendererConfig config, HRESULT& hr)
+: cmdListActive_(false), fenceValue_(0), config_(config) {
+	numBuffers_ = config_.numBuffers;
 	
 	RECT rect;
-	BOOL succeeded = GetWindowRect(params.hwnd, &rect);
+	BOOL succeeded = GetWindowRect(hwnd, &rect);
 
 	if(!succeeded) {
 		hr = E_FAIL;
@@ -76,6 +156,7 @@ Renderer::Renderer(RendererInitParams params, HRESULT& hr)
 
 	clientWidth_ = rect.right - rect.left;
 	clientHeight_ = rect.bottom - rect.top;
+	screenSizeRCV_.SetValue(ninmath::Vector2f{(float) clientWidth_, (float) clientHeight_});
 
 	dx12_init::EnableDebugLayer(hr);
 	CHECK_HR(hr);
@@ -92,7 +173,7 @@ Renderer::Renderer(RendererInitParams params, HRESULT& hr)
 	cmdCopyQueue_ = dx12_init::CreateCommandQueue(device_, D3D12_COMMAND_LIST_TYPE_COPY, hr);
 	CHECK_HR(hr);
 
-	swapChain_ = dx12_init::CreateSwapChain<IDXGISwapChain4>(params.hwnd, cmdQueue_, 2, DXGI_FORMAT_R8G8B8A8_UNORM, hr);
+	swapChain_ = dx12_init::CreateSwapChain<IDXGISwapChain4>(hwnd, cmdQueue_, 2, config.swapChainFormat, hr);
 	CHECK_HR(hr);
 
 	curBackBufferIndex_ = swapChain_->GetCurrentBackBufferIndex();
@@ -134,9 +215,11 @@ Renderer::Renderer(RendererInitParams params, HRESULT& hr)
 	fenceEvent_ = CreateEvent(NULL, FALSE, FALSE, NULL);
 	assert(fenceEvent_);
 
+	scissorRect_ = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
+	viewport_ = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(clientWidth_), static_cast<float>(clientHeight_));
+
 	shaderCompiler_ = std::make_shared<ShaderCompiler>();
 
-	// TBD: how to specify what type of descriptor allocator?
 	resourceDescriptorAllocator_ = std::make_shared<StaticDescriptorAllocator>(device_,
 																		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 																		500,
@@ -149,12 +232,50 @@ Renderer::Renderer(RendererInitParams params, HRESULT& hr)
 																		true
 																		);
 	
+	renderTargetDescriptorAllocator_ = std::make_shared<StaticDescriptorAllocator>(device_,
+																		D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+																		10,
+																		false	
+																		);
+	
+	depthStencilDescriptorAllocator_ = std::make_shared<StaticDescriptorAllocator>(device_,
+																		D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+																		10,
+																		false	
+																		);
+	
 	pipelineAssembler_ = std::make_shared<PipelineAssembler>(device_, resourceDescriptorAllocator_, samplerDescriptorAllocator_);
+
+	// create render target handles for swap chain buffers
+	std::shared_ptr<RenderTargetHandle> swapChainRtHandle = std::make_shared<RenderTargetHandle>();
+	swapChainRtHandle->format = config_.swapChainFormat;
+	swapChainRtHandle->id = Renderer::SwapChainRenderTargetID;
+	swapChainRtHandle->sampleDesc.Count = 1;
+	swapChainRtHandle->sampleDesc.Quality = 0;
+	
+	for(int i = 0; i < numBuffers_; i++) {
+		winrt::com_ptr<ID3D12Resource> res;
+		swapChain_->GetBuffer(i, __uuidof(ID3D12Resource), res.put_void());
+		WINRT_ASSERT(res);
+
+		std::shared_ptr<RenderTarget> rt = std::make_shared<RenderTarget>(res, D3D12_RESOURCE_STATE_COMMON);
+		swapChainRtHandle->resources.push_back(std::move(rt));
+	}
+
+	renderTargetMap_.insert({Renderer::SwapChainRenderTargetID, std::move(swapChainRtHandle)});
+
+	RenderTargetGroupID swapChainGroupID({Renderer::SwapChainRenderTargetID});
+	bool success = CreateRenderTargetDescriptorAllocation(swapChainGroupID);
+	WINRT_ASSERT(success);
+
+	//depthBufferMemoryAllocator_ = std::make_shared<StaticMemoryAllocator>(GetDevice());
+	//InitializeDefaultDepthBuffers();
 }
 
 Renderer::~Renderer() {
+	std::cout << "Destroying renderer." << std::endl;
 	// flush all graphics commands
-	const uint64_t lastFenceVal = ++fenceValue_;
+	const uint64_t lastFenceVal = fenceValue_;
 	HRESULT hr = cmdQueue_->Signal(mainFence_.get(), lastFenceVal);
 	winrt::check_hresult(hr);
 
@@ -163,27 +284,55 @@ Renderer::~Renderer() {
 		mainFence_->SetEventOnCompletion(lastFenceVal, fenceEvent_);
 		WaitForSingleObject(fenceEvent_, INFINITE); // block
 	}
+
+	shaderCompiler_.reset();
+	pipelineAssembler_.reset();
+	
+	renderTargetMap_.clear();
+	depthStencilTargetMap_.clear();
+
+	resourceDescriptorAllocator_.reset();
+    samplerDescriptorAllocator_.reset();
+    renderTargetDescriptorAllocator_.reset();
+    depthStencilDescriptorAllocator_.reset();
+	
+	memoryAllocator_.reset();
 }
 
 std::weak_ptr<PipelineState> Renderer::FinalizeGraphicsPipelineBuild(const GraphicsPipelineBuilder& builder) {
 	WINRT_ASSERT(shaderCompiler_);
 	
-	std::cout << "Finalizing " << builder.id << std::endl;
-	if(psoMap_.contains(builder.id)) {
+	std::cout << "Finalizing " << builder.id_ << std::endl;
+	if(psoMap_.contains(builder.id_)) {
 		return std::weak_ptr<GraphicsPipelineState>();
 	}
 
 	// check
 	WINRT_ASSERT(builder.vertexShaderPath_.has_value() && "Vertex shader not set.");
 	WINRT_ASSERT(builder.pixelShaderPath_.has_value() && "Pixel shader not set.");
-	WINRT_ASSERT(builder.renderTarget_ != nullptr || builder.useDefaultRenderTarget_ && "Render target not specified");
-	WINRT_ASSERT(builder.depthBuffer_ != nullptr || builder.useDefaultDepthBuffer_ && "Render target not specified");
+	// WINRT_ASSERT(builder.renderTarget_ != nullptr || builder.useDefaultRenderTarget_ && "Render target not specified");
+	// WINRT_ASSERT(builder.depthBuffer_ != nullptr || builder.useDefaultDepthBuffer_ && "Render target not specified");
 
-	std::shared_ptr<GraphicsPipelineState> pso = std::make_shared<GraphicsPipelineState>(builder.id);
+	std::shared_ptr<GraphicsPipelineState> pso = std::make_shared<GraphicsPipelineState>(builder.id_);
 	pso->resMap_ = std::move(builder.resMap_);
 	pso->constantMap_ = std::move(builder.constantMap_);
 	pso->samplerMap_ = std::move(builder.samplerMap_);
 	pso->staticSamplerMap_ = std::move(builder.staticSamplerMap_);
+	pso->rootSignaturePriorityShader_ = builder.rootSignaturePriorityShader_;
+
+	pso->vertexBufferMap_ = std::move(builder.vertexBufferMap_);
+	pso->indexBuffer_ = std::move(builder.indexBuffer_);
+
+	for(const auto& [slotIndex, id]: builder.renderTargetMap_) {
+		WINRT_ASSERT(renderTargetMap_.contains(id));
+		pso->renderTargetMap_.insert({slotIndex, renderTargetMap_[id]});
+	}
+
+	if(builder.depthBufferId_.has_value()) {
+		WINRT_ASSERT(depthStencilTargetMap_.contains(builder.depthBufferId_.value()));
+		pso->depthBuffer_ = depthStencilTargetMap_.at(builder.depthBufferId_.value());
+		pso->depthId_ = builder.depthBufferId_.value();
+	}
 
 	// assign shaders
 	
@@ -224,10 +373,138 @@ std::weak_ptr<PipelineState> Renderer::FinalizeGraphicsPipelineBuild(const Graph
 	pso->vertexShader_ = std::static_pointer_cast<VertexShader>(vs.lock());
 	pso->pixelShader_ = std::static_pointer_cast<PixelShader>(ps.lock());
 
-	pipelineAssembler_->Enqueue(pso);
-	psoMap_.insert({builder.id, std::move(pso)});
 
-	return psoMap_[builder.id];
+	// allocate descriptors for render target(s) & depth buffers
+	// if the tuple of render targets (order matters) is already allocated
+	// in the descriptor heap, then it is reused, otherwise allocate a new one
+
+	// NOTE: here we depend on the sorted order std::map provides (expecting slotInd to be increasing and continuous integers+)
+	std::vector<ResourceID> rtIds;
+	for(const auto& [slotInd, rt] : pso->renderTargetMap_) {
+		rtIds.push_back(rt.lock()->id);
+	}
+
+	// create a tuple from the (in order) render target IDs
+	const RenderTargetGroupID rtGroupId(rtIds);
+
+	// if the group id exists, use the mapped set of rt descriptors (1 group of render targets per frame),
+	// otherwise, create a new one
+	if(!renderTargetAllocMap_.contains(rtGroupId)) {
+		CreateRenderTargetDescriptorAllocation(rtGroupId);
+	}
+
+	WINRT_ASSERT(renderTargetAllocMap_.contains(rtGroupId));
+
+	// will be used for binding the correct set of render targets in render time
+	pso->rtGroupId_ = rtGroupId;
+
+	// enqueue for assembly, and insert into map
+	pipelineAssembler_->Enqueue(pso);
+	psoMap_.insert({builder.id_, std::move(pso)});
+	
+	return psoMap_[builder.id_];
+}
+
+bool Renderer::CreateRenderTargetDescriptorAllocation(const RenderTargetGroupID& groupId) {
+	if(renderTargetAllocMap_.contains(groupId)) {
+		return false;
+	}
+	
+	std::vector<std::weak_ptr<DescriptorHeapAllocation>> allocs;
+	const std::vector<ResourceID>& rtIds = groupId.GetIDs();
+
+	// for each "frame" (i.e. swap chain buffer), create a set of descriptors according to the queried ids.
+	for(int swapChainBufferInd = 0; swapChainBufferInd < numBuffers_; swapChainBufferInd++) {
+		std::shared_ptr<DescriptorHeapAllocation> allocation = renderTargetDescriptorAllocator_->Allocate(rtIds.size()).lock();
+
+		// realize each descriptor slot, in the newly created allocation
+		for(int rtInd = 0; rtInd < rtIds.size(); rtInd++) {
+			const ResourceID& id = rtIds[rtInd];
+			
+			WINRT_ASSERT(renderTargetMap_.contains(id));
+			
+			std::shared_ptr<RenderTargetHandle>& rtHandle = renderTargetMap_[id];
+			WINRT_ASSERT(rtHandle->resources.size() == numBuffers_);
+			
+			D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle;
+			bool success = allocation->GetCPUDescriptorHandleOffsetted(rtInd, cpuHandle);
+			WINRT_ASSERT(success);
+
+			std::shared_ptr<RenderTarget> rt = rtHandle->resources[swapChainBufferInd];
+			success = rt->CreateRenderTargetView(cpuHandle);
+			WINRT_ASSERT(success);
+		}
+
+		allocs.push_back(allocation);
+	}
+
+	// insert to map
+	renderTargetAllocMap_.insert({groupId, allocs});
+
+	WINRT_ASSERT(renderTargetAllocMap_.contains(groupId));
+	return true;
+}
+
+void Renderer::OnMemoryAllocatorSet() {
+	WINRT_ASSERT(memoryAllocator_);
+
+	auto allocateDescriptors = [&]() {
+		WINRT_ASSERT(depthStencilDescriptorAllocator_);
+		
+		std::vector<std::weak_ptr<DescriptorHeapAllocation>> allocations;
+		auto depthHandle = depthStencilTargetMap_.at(Renderer::DefaultDepthStencilTargetID);
+		
+		for(int i = 0; i < numBuffers_; i++) {
+			std::shared_ptr<DescriptorHeapAllocation> allocation = depthStencilDescriptorAllocator_->Allocate(1).lock();
+
+			D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle;
+			bool success = allocation->GetCPUDescriptorHandle(cpuHandle);
+			WINRT_ASSERT(success);
+
+			success = depthHandle->resources[i]->CreateDepthStencilView(cpuHandle);
+			WINRT_ASSERT(success);
+			
+			allocations.push_back(allocation);
+		}
+		
+		depthBufferAllocMap_.insert({Renderer::DefaultDepthStencilTargetID, allocations});
+	};
+	
+	memoryAllocator_->AddCommitCallback(allocateDescriptors);
+	
+	std::shared_ptr<DepthStencilTargetHandle> depthHandle = std::make_shared<DepthStencilTargetHandle>();
+	depthHandle->format = DXGI_FORMAT_D32_FLOAT;
+	depthHandle->id = Renderer::DefaultDepthStencilTargetID;
+	depthHandle->sampleDesc.Count = 1;
+	depthHandle->sampleDesc.Quality = 0;
+	
+	for(int i = 0; i < numBuffers_; i++) {
+		const std::string id = Renderer::DefaultDepthStencilTargetID + "_" + std::to_string(i);
+
+		// force depth to be a CommittedResource() due to:
+		// "...cannot have D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL set with D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, nor D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS."
+		// i.e. depth buffer and uav texture cannot be placed in the same heap
+		//
+		// Alternatively, we can just use a private heap for depth buffers and (custom) render targets
+
+		std::weak_ptr<DepthBuffer> newDepthBuffer = memoryAllocator_->CreateResource<DepthBuffer>(id,
+																								DepthBufferFormat::D32_FLOAT,
+																								clientWidth_,
+																								clientHeight_);
+
+		depthHandle->resources.push_back(newDepthBuffer.lock());
+	}
+
+	depthStencilTargetMap_.insert({Renderer::DefaultDepthStencilTargetID, depthHandle});
+}
+
+void Renderer::InitializeDefaultDepthBuffers() {
+	WINRT_ASSERT(depthBufferMemoryAllocator_);
+	WINRT_ASSERT(depthStencilDescriptorAllocator_);
+	
+
+	//
+	depthBufferMemoryAllocator_->Commit();
 }
 
 
@@ -245,12 +522,54 @@ winrt::com_ptr<ID3D12GraphicsCommandList> Renderer::StartCommandList(HRESULT& hr
 	CHECK_HR_NULL(hr);
 
 	cmdListActive_ = true;
+
+	// there's only 1 resource and sampler heap, bind them now
+	ID3D12DescriptorHeap* heaps[] = {
+		resourceDescriptorAllocator_->GetDescriptorHeap().get(),
+		samplerDescriptorAllocator_->GetDescriptorHeap().get()
+	};
+	cmdList_->SetDescriptorHeaps(_countof(heaps), heaps);
+
+	// scissor and viewport represent entire window, will need to
+	// modify this in order to support split-screen
+	cmdList_->RSSetScissorRects(1, &scissorRect_);
+	cmdList_->RSSetViewports(1, &viewport_);
+
+	// in order for us to clear render targets, they must be in RENDER_TARGET state
+	std::vector<D3D12_RESOURCE_BARRIER> barriers;
+	std::shared_ptr<RenderTarget> curSwapChainBuffer = renderTargetMap_[Renderer::SwapChainRenderTargetID]->resources[curBackBufferIndex_];
+	curSwapChainBuffer->ChangeState(D3D12_RESOURCE_STATE_RENDER_TARGET, barriers);
+
+	if(barriers.size() > 0) {
+		cmdList_->ResourceBarrier(barriers.size(), barriers.data());	
+	}
+
+	// clear current swap chain buffer and default depth
+	FLOAT clearColor[4] = {0,0,0,0};
+	
+	D3D12_CPU_DESCRIPTOR_HANDLE rtDescriptor;
+	renderTargetAllocMap_[RenderTargetGroupID({Renderer::SwapChainRenderTargetID})][curBackBufferIndex_].lock()->GetCPUDescriptorHandle(rtDescriptor);
+
+	D3D12_CPU_DESCRIPTOR_HANDLE depthDescriptor;
+	depthBufferAllocMap_[Renderer::DefaultDepthStencilTargetID][curBackBufferIndex_].lock()->GetCPUDescriptorHandle(depthDescriptor);
+	
+	cmdList_->ClearRenderTargetView(rtDescriptor, clearColor, 0, nullptr);
+	cmdList_->ClearDepthStencilView(depthDescriptor, D3D12_CLEAR_FLAG_DEPTH, 1.f, 0, 0, nullptr);
 	
 	return cmdList_;
 }
 
 void Renderer::FinishCommandList(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, HRESULT& hr) {
 	assert(cmdList == cmdList_);
+
+	// swap chain render targets to state: PRESENT
+	std::vector<D3D12_RESOURCE_BARRIER> barriers;
+	std::shared_ptr<RenderTarget> curSwapChainBuffer = renderTargetMap_[Renderer::SwapChainRenderTargetID]->resources[curBackBufferIndex_];
+	curSwapChainBuffer->ChangeState(D3D12_RESOURCE_STATE_PRESENT, barriers);
+
+	if(barriers.size() > 0) {
+		cmdList->ResourceBarrier(barriers.size(), barriers.data());	
+	}
 
 	hr = cmdList_->Close();
 	CHECK_HR(hr);
@@ -290,6 +609,8 @@ void Renderer::FinishCommandList(winrt::com_ptr<ID3D12GraphicsCommandList> cmdLi
 void Renderer::Tick(double deltaTime) {
 	HRESULT hr;
 	
+	screenSizeRCV_.SetValue(ninmath::Vector2f{(float) clientWidth_, (float) clientHeight_});
+	
 	// let memory allocator do work, if there is any
 	if(memoryAllocator_->HasWork()) {
 		hr = cmdCopyAllocators_[curBackBufferIndex_]->Reset();
@@ -308,6 +629,58 @@ GraphicsPipelineBuilder Renderer::BuildGraphicsPipeline(std::string id) {
 	GraphicsPipelineBuilder::BuildFunction buildFunc = std::bind(&Renderer::FinalizeGraphicsPipelineBuild, this, std::placeholders::_1);
 	GraphicsPipelineBuilder builder = GraphicsPipelineBuilder(id, buildFunc);
 	return builder;
+}
+
+ComputePipelineBuilder Renderer::BuildComputePipeline(std::string id) {
+	ComputePipelineBuilder::BuildFunction buildFunc = std::bind(&Renderer::FinalizeComputePipelineBuild, this, std::placeholders::_1);
+	ComputePipelineBuilder builder = ComputePipelineBuilder(id, buildFunc);
+	return builder;
+}
+
+std::weak_ptr<PipelineState> Renderer::FinalizeComputePipelineBuild(const ComputePipelineBuilder& builder) {
+	WINRT_ASSERT(shaderCompiler_);
+	
+	std::cout << "Finalizing " << builder.id_ << std::endl;
+	if(psoMap_.contains(builder.id_)) {
+		return std::weak_ptr<GraphicsPipelineState>();
+	}
+
+	// check
+	WINRT_ASSERT(builder.computeShaderPath_.has_value() && "Compute shader not set.");
+	
+	std::shared_ptr<ComputePipelineState> pso = std::make_shared<ComputePipelineState>(builder.id_);
+	pso->resMap_ = std::move(builder.resMap_);
+	pso->constantMap_ = std::move(builder.constantMap_);
+	pso->samplerMap_ = std::move(builder.samplerMap_);
+	pso->staticSamplerMap_ = std::move(builder.staticSamplerMap_);
+	pso->threadCountX_ = std::move(builder.threadCountX_);
+	pso->threadCountY_ = std::move(builder.threadCountY_);
+	pso->threadCountZ_ = std::move(builder.threadCountZ_);
+	pso->threadGroupCountX_ = std::move(builder.threadGroupCountX_);
+	pso->threadGroupCountY_ = std::move(builder.threadGroupCountY_);
+	pso->threadGroupCountZ_ = std::move(builder.threadGroupCountZ_);
+	
+	const std::string& shaderPath = builder.computeShaderPath_.value();
+
+	std::shared_ptr<Shader> cs;
+	if(shaderMap_.contains(shaderPath)) {
+		cs = shaderMap_[shaderPath];
+	}
+	else {
+		cs = std::make_shared<ComputeShader>(shaderPath, pso->threadCountX_, pso->threadCountY_, pso->threadCountZ_);
+		shaderCompiler_->Enqueue(cs);
+		shaderMap_.insert({shaderPath, cs});
+	}
+
+	WINRT_ASSERT(cs);
+
+	pso->computeShader_ = cs;
+
+	// enqueue for assembly, and insert into map
+	pipelineAssembler_->Enqueue(pso);
+	psoMap_.insert({builder.id_, std::move(pso)});
+	
+	return psoMap_[builder.id_];
 }
 
 //
@@ -370,6 +743,28 @@ winrt::com_ptr<T> dx12_init::CreateDevice(winrt::com_ptr<IDXGIAdapter4> adapter,
 		infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
 	}
 
+	D3D12_MESSAGE_SEVERITY severities[] = {
+		D3D12_MESSAGE_SEVERITY_INFO
+	};
+
+	// Suppress individual messages by their ID
+	D3D12_MESSAGE_ID deny_ids[] = {
+		D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,   // I'm really not sure how to avoid this message.
+		D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,                         // This warning occurs when using capture frame while graphics debugging.
+		D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,                       // This warning occurs when using capture frame while graphics debugging.
+	};
+ 
+	D3D12_INFO_QUEUE_FILTER new_filter= {};
+	//NewFilter.DenyList.NumCategories = _countof(Categories);
+	//NewFilter.DenyList.pCategoryList = Categories;
+	new_filter.DenyList.NumSeverities = _countof(severities);
+	new_filter.DenyList.pSeverityList = severities;
+	new_filter.DenyList.NumIDs = _countof(deny_ids);
+	new_filter.DenyList.pIDList = deny_ids;
+ 
+	hr = infoQueue->PushStorageFilter(&new_filter);
+	CHECK_HR_NULL(hr);
+
 	return device;
 }
 
@@ -426,6 +821,8 @@ winrt::com_ptr<T> dx12_init::CreateSwapChain(HWND hwnd, winrt::com_ptr<ID3D12Com
 	// This parameter cannot be NULL."
 	hr = dxgiFactory->CreateSwapChainForHwnd(cmdQueue.get(), hwnd, &scDesc, nullptr, nullptr, swapChain1.put());
 	CHECK_HR_NULL(hr);
+
+	// "Swap chain back buffers automatically start out in the D3D12_RESOURCE_STATE_COMMON state."
 
 	hr = swapChain1.as(__uuidof(T), swapChain.put_void());
 	CHECK_HR_NULL(hr);
