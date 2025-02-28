@@ -35,7 +35,8 @@ VertexShaderOutput main(VertexPosColor IN)
     //float4 c = globalVal * tex1.SampleLevel(s, float2(0,0), 0);
     //float4 d = tex2.SampleLevel(s, float2(0,0), 0);
     
-    OUT.Position = IN.Position + float4(globalVal, 0, 0, 0);
+    // OUT.Position = IN.Position + float4(globalVal, 0, 0, 0);
+    OUT.Position = float4(2 * IN.Position.xyz, 1);
     OUT.UVs = IN.UVs;
 
  

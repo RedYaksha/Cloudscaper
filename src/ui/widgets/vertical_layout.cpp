@@ -1,16 +1,15 @@
 ﻿#include "vertical_layout.h"
+#include "assert.h"
 
 void VerticalLayout::AddChild(std::shared_ptr<Widget> widget, HorizontalAlignment alignment) {
     assert(widget);
+    Widget::AddChild(widget);
     
-    children_.push_back(widget);
     widgetAlignmentMap_.insert({widget->GetID(), alignment});
-    
-    widget->SetParent(this);
 }
 
 void VerticalLayout::ResolveChildrenPositions() {
-    ninmath::Vector2f curPos = pos_;
+    ninmath::Vector2f curPos = ComputeContentStartPosition();
 
     float contentSizeX = size_.x - margin_.l - margin_.r;
     

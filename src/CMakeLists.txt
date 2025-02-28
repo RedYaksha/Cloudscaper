@@ -21,10 +21,19 @@ set( SOURCE_FILES
     
 # ui 
     ui/ui_framework.cpp
+    ui/font_manager.cpp
     
     ui/widgets/widget.cpp
     ui/widgets/button.cpp
     ui/widgets/layout.cpp
+    ui/widgets/vertical_layout.cpp
+    ui/widgets/text.cpp
+    ui/widgets/text_input.cpp
+    
+    ui/primitive_renderers/quad_primitive_renderer.cpp
+    ui/primitive_renderers/ui_primitive_renderer.cpp
+    ui/primitive_renderers/text_primitive_renderer.cpp
+    ui/primitive_renderers/rounded_rect_primitive_renderer.cpp
     
 # application
     application/application.cpp
@@ -60,11 +69,22 @@ set( HEADER_FILES
     
 # ui 
     ui/ui_framework.h
-    ui/ui_primitives.h
+    ui/font_manager.h
+    ui/primitive_renderers/ui_primitives.h
+    ui/primitive_renderers/quad_primitive_renderer.h
+    ui/primitive_renderers/ui_primitive_renderer.h
+    ui/primitive_renderers/text_primitive_renderer.h
+    ui/primitive_renderers/rounded_rect_primitive_renderer.h
     
     ui/widgets/widget.h
     ui/widgets/button.h
     ui/widgets/layout.h
+    ui/widgets/vertical_layout.h
+    ui/widgets/text.h
+    ui/widgets/text_input.h
+    ui/widgets/numeric_input.h
+    ui/widgets/labeled_numeric_input.h
+    ui/widgets/slider.h
 
 # ninmath 
     ninmath/ninmath.h
@@ -92,9 +112,25 @@ set( SHADER_FILES
     shaders/atmosphere/skyview_lut_cs.hlsl
     shaders/atmosphere/transmittance_lut_cs.hlsl
     
+# cloudscapes
+    shaders/cloudscapes/compute_detail_noise_cs.hlsl
+    shaders/cloudscapes/compute_model_noise_cs.hlsl
+    shaders/cloudscapes/raymarch_quad_ps.hlsl
+    shaders/cloudscapes/raymarch_quad_vs.hlsl
+    shaders/cloudscapes/texture_3d_mip_maps_cs.hlsl
+    
+# common
+    shaders/common/math.hlsl
+    shaders/common/render_common.hlsl
+    shaders/common/volumetric_rendering.hlsl
+    
 # ui
     shaders/ui/quad_vs.hlsl
     shaders/ui/quad_ps.hlsl
+    shaders/ui/text_rect_vs.hlsl
+    shaders/ui/text_rect_ps.hlsl
+    shaders/ui/rounded_rect_vs.hlsl
+    shaders/ui/rounded_rect_ps.hlsl
 )
 
 set_source_files_properties(${SHADER_FILES} PROPERTIES LANGUAGE HLSL)
@@ -109,6 +145,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
                              ${CMAKE_CURRENT_SOURCE_DIR}/renderer
                              ${CMAKE_CURRENT_SOURCE_DIR}/application
                              ${THIRD_PARTY_SOURCE_DIR}/DirectX-Headers/include
+                             ${THIRD_PARTY_SOURCE_DIR}/artery-font-format
+                             
+                             ${CMAKE_CURRENT_SOURCE_DIR}/shaders
                            )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE winmm.lib)

@@ -30,6 +30,7 @@ Texture2D<float4> multiscatteringLUT : register(t1);
 SamplerState lutSampler : register(s0);
 
 ConstantBuffer<AtmosphereContext> atmosphere : register(b0);
+ConstantBuffer<SkyBuffer> gSky : register(b1);
 
 #define NUM_SKYVIEW_INTEGRATION_STEPS 30
 
@@ -137,7 +138,7 @@ float3 IntegrateLuminance(float3 rayOrigin, float3 rayDir, float3 lightDir) {
 
 
 [RootSignature( SkyViewLUT_RootSignature )]
-[numthreads(32, 32, 1)] // define the cells in a thread group
+[numthreads(THREAD_COUNT_X, THREAD_COUNT_Y, THREAD_COUNT_Z)] 
 void main( ComputeShaderInput IN ) {
     const uint3 Cell = IN.DispatchThreadID;
 

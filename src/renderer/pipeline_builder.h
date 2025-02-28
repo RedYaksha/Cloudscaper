@@ -2,29 +2,42 @@
 #define RENDERER_PIPELINE_BUILDER_H_
 
 #include <string>
+#include <unordered_map>
 #include "root_constant_value.h"
 #include "renderer_types.h"
 #include "shader_types.h"
+#include "resources.h"
 
 class PipelineState;
 class IndexBufferBase;
 class VertexBufferBase;
 class Renderer;
 
-class PipelineBuilderBase {
+class ResourceConfiguration {
 public:
-
-    virtual ~PipelineBuilderBase() = default;
-    PipelineBuilderBase(std::string id) : id_(id) {}
-
 #define DefineResourceRegisterBindingFunc(type) \
-    void type ## Base(std::weak_ptr<Resource> res, \
+    ResourceConfiguration& type ## (std::weak_ptr<Resource> res, \
                                  uint16_t regNum, \
                                  ResourceBindMethod method = ResourceBindMethod::Automatic, \
                                  uint16_t regSpace = 0) { \
         const ShaderRegister shaderReg(ResourceDescriptorType:: ## type ##, regSpace, regNum); \
         WINRT_ASSERT(!resMap_.contains(shaderReg)); \
-        resMap_.insert({shaderReg, ResourceInfo{.res = res, .bindMethod = method}}); \
+        resMap_.insert({shaderReg, ResourceInfo{.res = res, .bindMethod = method, .descriptorConfig = nullptr }}); \
+        return *this; \
+    } \
+    
+#define DefineResourceRegisterBindingFuncWithConfig(type) \
+    template <IsDescriptorConfiguration T> \
+    ResourceConfiguration& type ## (std::weak_ptr<Resource> res, \
+                                 T descriptorConfig, \
+                                 uint16_t regNum, \
+                                 ResourceBindMethod method = ResourceBindMethod::Automatic, \
+                                 uint16_t regSpace = 0 \
+                                 ) { \
+        const ShaderRegister shaderReg(ResourceDescriptorType:: ## type ##, regSpace, regNum); \
+        WINRT_ASSERT(!resMap_.contains(shaderReg)); \
+        resMap_.insert({shaderReg, ResourceInfo{.res = res, .bindMethod = method, .descriptorConfig = std::make_shared<T>(descriptorConfig) }}); \
+        return *this; \
     } \
 
     DefineResourceRegisterBindingFunc(SRV)
@@ -32,10 +45,16 @@ public:
     DefineResourceRegisterBindingFunc(UAV)
     DefineResourceRegisterBindingFunc(Sampler)
     
+    DefineResourceRegisterBindingFuncWithConfig(SRV)
+    DefineResourceRegisterBindingFuncWithConfig(CBV)
+    DefineResourceRegisterBindingFuncWithConfig(UAV)
+    DefineResourceRegisterBindingFuncWithConfig(Sampler)
+    
 #undef DefineResourceRegisterBindingFunc
+#undef DefineResourceRegisterBindingFuncWithConfig 
     
     template <typename T>
-    void RootConstantBase(const RootConstantValue<T>& val,
+    ResourceConfiguration& RootConstant(const RootConstantValue<T>& val,
                                           uint16_t regNum,
                                           uint16_t regSpace = 0) {
         const ShaderRegister shaderReg(ResourceDescriptorType::CBV, regSpace, regNum);
@@ -46,9 +65,10 @@ public:
             .num32BitValues = val.GetSizeIn32BitValues()
         };
         constantMap_.insert({shaderReg, decl});
+        return *this;
     }
 
-    void SamplerBase(const D3D12_SAMPLER_DESC& desc,
+    ResourceConfiguration& Sampler(const D3D12_SAMPLER_DESC& desc,
                                      uint16_t regNum,
                                      uint16_t regSpace = 0) {
         
@@ -56,26 +76,144 @@ public:
         WINRT_ASSERT(!samplerMap_.contains(shaderReg));
 
         samplerMap_.insert({shaderReg, desc});
+        return *this;
     }
     
-    void StaticSamplerBase(const D3D12_SAMPLER_DESC& desc,
+    ResourceConfiguration& StaticSampler(const D3D12_SAMPLER_DESC& desc,
                                      uint16_t regNum,
                                      uint16_t regSpace = 0) {
         const ShaderRegister shaderReg(ResourceDescriptorType::Sampler, regSpace, regNum);
         WINRT_ASSERT(!staticSamplerMap_.contains(shaderReg));
         
         staticSamplerMap_.insert({shaderReg, desc});
+        return *this;
+    }
+
+    PipelineResourceMap<ResourceInfo> resMap_;
+    PipelineResourceMap<RootConstantInfo> constantMap_;
+    PipelineResourceMap<D3D12_SAMPLER_DESC> samplerMap_;
+    PipelineResourceMap<D3D12_SAMPLER_DESC> staticSamplerMap_;
+};
+
+class PipelineBuilderBase {
+public:
+
+    virtual ~PipelineBuilderBase() = default;
+    PipelineBuilderBase(std::string id) : id_(id) {
+        maxResourceConfigurationIndex_ = -1;
+    }
+
+#define DefineResourceRegisterBindingFunc(type) \
+    void type ## Base(std::weak_ptr<Resource> res, \
+                                 uint16_t regNum, \
+                                 ResourceBindMethod method = ResourceBindMethod::Automatic, \
+                                 uint16_t regSpace = 0) { \
+        EnsureValidConfigurationIndex(); \
+        const ShaderRegister shaderReg(ResourceDescriptorType:: ## type ##, regSpace, regNum); \
+        WINRT_ASSERT(!resMaps_[0].contains(shaderReg)); \
+        resMaps_[0].insert({shaderReg, ResourceInfo{.res = res, .bindMethod = method, .descriptorConfig = nullptr}}); \
+    } \
+    
+#define DefineResourceRegisterBindingFuncWithConfig(type) \
+    template <IsDescriptorConfiguration T> \
+    void type ## Base(std::weak_ptr<Resource> res, \
+                                 uint16_t regNum, \
+                                 T& descriptorConfig, \
+                                 ResourceBindMethod method = ResourceBindMethod::Automatic, \
+                                 uint16_t regSpace = 0 \
+                                 ) { \
+        EnsureValidConfigurationIndex(); \
+        const ShaderRegister shaderReg(ResourceDescriptorType:: ## type ##, regSpace, regNum); \
+        WINRT_ASSERT(!resMaps_[0].contains(shaderReg)); \
+        resMaps_[0].insert({shaderReg, ResourceInfo{.res = res, .bindMethod = method, .descriptorConfig = std::make_shared<T>(descriptorConfig) }}); \
+    } \
+
+    DefineResourceRegisterBindingFunc(SRV)
+    DefineResourceRegisterBindingFunc(CBV)
+    DefineResourceRegisterBindingFunc(UAV)
+    DefineResourceRegisterBindingFunc(Sampler)
+    
+    DefineResourceRegisterBindingFuncWithConfig(SRV)
+    DefineResourceRegisterBindingFuncWithConfig(CBV)
+    DefineResourceRegisterBindingFuncWithConfig(UAV)
+    DefineResourceRegisterBindingFuncWithConfig(Sampler)
+    
+#undef DefineResourceRegisterBindingFunc
+#undef DefineResourceRegisterBindingFuncWithConfig 
+    
+    template <typename T>
+    void RootConstantBase(const RootConstantValue<T>& val,
+                                          uint16_t regNum,
+                                          uint16_t regSpace = 0) {
+        EnsureValidConfigurationIndex();
+        
+        const ShaderRegister shaderReg(ResourceDescriptorType::CBV, regSpace, regNum);
+        WINRT_ASSERT(!constantMaps_[0].contains(shaderReg));
+
+        const RootConstantInfo decl {
+            .data = val.GetData(),
+            .num32BitValues = val.GetSizeIn32BitValues()
+        };
+        constantMaps_[0].insert({shaderReg, decl});
+    }
+
+    void SamplerBase(const D3D12_SAMPLER_DESC& desc,
+                                     uint16_t regNum,
+                                     uint16_t regSpace = 0) {
+        EnsureValidConfigurationIndex();
+        
+        const ShaderRegister shaderReg(ResourceDescriptorType::Sampler, regSpace, regNum);
+        WINRT_ASSERT(!samplerMaps_[0].contains(shaderReg));
+
+        samplerMaps_[0].insert({shaderReg, desc});
+    }
+    
+    void StaticSamplerBase(const D3D12_SAMPLER_DESC& desc,
+                                     uint16_t regNum,
+                                     uint16_t regSpace = 0) {
+        
+        EnsureValidConfigurationIndex();
+        
+        const ShaderRegister shaderReg(ResourceDescriptorType::Sampler, regSpace, regNum);
+        WINRT_ASSERT(!staticSamplerMaps_[0].contains(shaderReg));
+        
+        staticSamplerMaps_[0].insert({shaderReg, desc});
+    }
+
+    void ResourceConfigurationBase(uint32_t configIndex, ResourceConfiguration config) {
+        WINRT_ASSERT(configIndex == maxResourceConfigurationIndex_ + 1);
+
+        resMaps_.push_back(std::move(config.resMap_));
+        constantMaps_.push_back(std::move(config.constantMap_));
+        samplerMaps_.push_back(std::move(config.samplerMap_));
+        staticSamplerMaps_.push_back(std::move(config.staticSamplerMap_));
+        
+        maxResourceConfigurationIndex_++;
     }
 
     virtual std::weak_ptr<PipelineState> Build() = 0;
 
 protected:
+
+    void EnsureValidConfigurationIndex() {
+        if(maxResourceConfigurationIndex_ < 0) {
+            maxResourceConfigurationIndex_ = 0;
+            resMaps_.resize(1);
+            constantMaps_.resize(1);
+            samplerMaps_.resize(1);
+            staticSamplerMaps_.resize(1);
+        }
+    }
+    
     std::string id_;
     
-    std::map<ShaderRegister, ResourceInfo> resMap_;
-    std::map<ShaderRegister, RootConstantInfo> constantMap_;
-    std::map<ShaderRegister, D3D12_SAMPLER_DESC> samplerMap_;
-    std::map<ShaderRegister, D3D12_SAMPLER_DESC> staticSamplerMap_;
+    std::vector<PipelineResourceMap<ResourceInfo>> resMaps_;
+    std::vector<PipelineResourceMap<RootConstantInfo>> constantMaps_;
+    std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>> samplerMaps_;
+    std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>> staticSamplerMaps_;
+
+
+    int maxResourceConfigurationIndex_;
 };
 
 class GraphicsPipelineBuilder : public PipelineBuilderBase {
@@ -95,13 +233,30 @@ public:
         type ## Base(res, regNum, method, regSpace); \
         return *this; \
     } \
+    
+#define DefineResourceRegisterBindingFuncWithConfig(type) \
+    template <IsDescriptorConfiguration T> \
+    GraphicsPipelineBuilder& ## type ##(std::weak_ptr<Resource> res, \
+                                 T& descriptorConfig, \
+                                 uint16_t regNum, \
+                                 ResourceBindMethod method = ResourceBindMethod::Automatic, \
+                                 uint16_t regSpace = 0) { \
+        type ## Base(res, regNum, method, regSpace, descriptorConfig); \
+        return *this; \
+    } \
 
     DefineResourceRegisterBindingFunc(SRV)
     DefineResourceRegisterBindingFunc(CBV)
     DefineResourceRegisterBindingFunc(UAV)
     DefineResourceRegisterBindingFunc(Sampler)
     
+    DefineResourceRegisterBindingFuncWithConfig(SRV)
+    DefineResourceRegisterBindingFuncWithConfig(CBV)
+    DefineResourceRegisterBindingFuncWithConfig(UAV)
+    DefineResourceRegisterBindingFuncWithConfig(Sampler)
+    
 #undef DefineResourceRegisterBindingFunc
+#undef DefineResourceRegisterBindingFuncWithConfig 
 
     template <typename T>
     GraphicsPipelineBuilder& RootConstant(const RootConstantValue<T>& val,
@@ -153,6 +308,16 @@ public:
         return *this;
     }
 
+    GraphicsPipelineBuilder& ResourceConfiguration(uint32_t configIndex, ResourceConfiguration config) {
+        ResourceConfigurationBase(configIndex, config);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& BlendState(D3D12_BLEND_DESC desc) {
+        blendDesc_ = desc;
+        return *this;
+    }
+
     std::weak_ptr<PipelineState> Build() override {
         return buildFunc_(*this);
     }
@@ -181,6 +346,7 @@ private:
     std::map<uint16_t, std::weak_ptr<class VertexBufferBase>> vertexBufferMap_;
     std::weak_ptr<class IndexBufferBase> indexBuffer_;
     std::map<uint16_t, ResourceID> renderTargetMap_;
+    std::optional<D3D12_BLEND_DESC> blendDesc_;
 };
 
 class ComputePipelineBuilder : public PipelineBuilderBase {
@@ -196,12 +362,29 @@ public:
         return *this; \
     } \
 
+#define DefineResourceRegisterBindingFuncWithConfig(type) \
+    template <IsDescriptorConfiguration T> \
+    ComputePipelineBuilder& ## type ##(std::weak_ptr<Resource> res, \
+                                 T descriptorConfig, \
+                                 uint16_t regNum, \
+                                 ResourceBindMethod method = ResourceBindMethod::Automatic, \
+                                 uint16_t regSpace = 0) { \
+        type ## Base(res, regNum, method, regSpace, descriptorConfig); \
+        return *this; \
+    } \
+    
     DefineResourceRegisterBindingFunc(SRV)
     DefineResourceRegisterBindingFunc(CBV)
     DefineResourceRegisterBindingFunc(UAV)
     DefineResourceRegisterBindingFunc(Sampler)
     
+    DefineResourceRegisterBindingFuncWithConfig(SRV)
+    DefineResourceRegisterBindingFuncWithConfig(CBV)
+    DefineResourceRegisterBindingFuncWithConfig(UAV)
+    DefineResourceRegisterBindingFuncWithConfig(Sampler)
+    
 #undef DefineResourceRegisterBindingFunc
+#undef DefineResourceRegisterBindingFuncWithConfig 
     
     template <typename T>
     ComputePipelineBuilder& RootConstant(RootConstantValue<T>& val,
@@ -236,6 +419,48 @@ public:
         threadGroupCountX_ = x;
         threadGroupCountY_ = y;
         threadGroupCountZ_ = z;
+        return *this;
+    }
+
+    ComputePipelineBuilder& SyncThreadCountsWithSize(bool maximizeCountX, bool maximizeCountY, bool maximizeCountZ, uint32_t width, uint32_t height, uint32_t depth) {
+        // TODO: this number may need to be changed depending on feature levels
+        const uint32_t threadCountX = maximizeCountX? 32 : 1;
+        const uint32_t threadCountY = maximizeCountY? 32 : 1;
+        const uint32_t threadCountZ = maximizeCountZ? 32 : 1;
+        
+        ThreadCount(threadCountX, threadCountY, threadCountZ);
+
+        ThreadGroupCount(
+            (width + threadCountX - 1) / threadCountX,
+            (height + threadCountY - 1) / threadCountY,
+            (depth + threadCountZ - 1) / threadCountZ
+        );
+
+        return *this;
+    }
+    
+
+    ComputePipelineBuilder& SyncThreadCountsWithTexture2DSize(std::weak_ptr<Texture2D> tex) {
+        std::shared_ptr<Texture2D> texShared = tex.lock();
+        const uint32_t width = texShared->GetWidth();
+        const uint32_t height = texShared->GetHeight();
+
+        SyncThreadCountsWithSize(true, true, false, width, height, 1);
+        return *this;
+    }
+    
+    ComputePipelineBuilder& SyncThreadCountsWithTexture3DSize(std::weak_ptr<Texture3D> tex) {
+        std::shared_ptr<Texture3D> texShared = tex.lock();
+        const uint32_t width = texShared->GetWidth();
+        const uint32_t height = texShared->GetHeight();
+        const uint32_t depth = texShared->GetDepth();
+
+        SyncThreadCountsWithSize(true, true, false, width, height, depth);
+        return *this;
+    }
+    
+    ComputePipelineBuilder& ResourceConfiguration(uint32_t configIndex, ResourceConfiguration config) {
+        ResourceConfigurationBase(configIndex, config);
         return *this;
     }
     

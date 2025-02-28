@@ -73,7 +73,7 @@ std::shared_ptr<Renderer> Renderer::CreateRenderer(HWND hwnd, RendererConfig par
 
 void Renderer::ExecutePipeline(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, std::shared_ptr<PipelineState> pso) {
 	if(!pso->IsStateReady()) {
-		std::cout << "pso not assembled" << std::endl;
+		// std::cout << "pso not assembled" << std::endl;
 		return;
 	}
 	
@@ -307,6 +307,9 @@ std::weak_ptr<PipelineState> Renderer::FinalizeGraphicsPipelineBuild(const Graph
 		return std::weak_ptr<GraphicsPipelineState>();
 	}
 
+	// TODO: assert that resource config arrays are continuous
+	// e.g. if there are 3 configs, then resMap[0], resMap[1], and resMap[2] must exist (but not necessarily populated).
+
 	// check
 	WINRT_ASSERT(builder.vertexShaderPath_.has_value() && "Vertex shader not set.");
 	WINRT_ASSERT(builder.pixelShaderPath_.has_value() && "Pixel shader not set.");
@@ -314,14 +317,17 @@ std::weak_ptr<PipelineState> Renderer::FinalizeGraphicsPipelineBuild(const Graph
 	// WINRT_ASSERT(builder.depthBuffer_ != nullptr || builder.useDefaultDepthBuffer_ && "Render target not specified");
 
 	std::shared_ptr<GraphicsPipelineState> pso = std::make_shared<GraphicsPipelineState>(builder.id_);
-	pso->resMap_ = std::move(builder.resMap_);
-	pso->constantMap_ = std::move(builder.constantMap_);
-	pso->samplerMap_ = std::move(builder.samplerMap_);
-	pso->staticSamplerMap_ = std::move(builder.staticSamplerMap_);
+	pso->resMaps_ = std::move(builder.resMaps_);
+	pso->constantMaps_ = std::move(builder.constantMaps_);
+	pso->samplerMaps_ = std::move(builder.samplerMaps_);
+	pso->staticSamplerMaps_ = std::move(builder.staticSamplerMaps_);
+	
 	pso->rootSignaturePriorityShader_ = builder.rootSignaturePriorityShader_;
 
 	pso->vertexBufferMap_ = std::move(builder.vertexBufferMap_);
 	pso->indexBuffer_ = std::move(builder.indexBuffer_);
+
+	pso->blendDesc_ = std::move(builder.blendDesc_);
 
 	for(const auto& [slotIndex, id]: builder.renderTargetMap_) {
 		WINRT_ASSERT(renderTargetMap_.contains(id));
@@ -545,7 +551,7 @@ winrt::com_ptr<ID3D12GraphicsCommandList> Renderer::StartCommandList(HRESULT& hr
 	}
 
 	// clear current swap chain buffer and default depth
-	FLOAT clearColor[4] = {0,0,0,0};
+	FLOAT clearColor[4] = {0,0,0,1.0f};
 	
 	D3D12_CPU_DESCRIPTOR_HANDLE rtDescriptor;
 	renderTargetAllocMap_[RenderTargetGroupID({Renderer::SwapChainRenderTargetID})][curBackBufferIndex_].lock()->GetCPUDescriptorHandle(rtDescriptor);
@@ -649,10 +655,11 @@ std::weak_ptr<PipelineState> Renderer::FinalizeComputePipelineBuild(const Comput
 	WINRT_ASSERT(builder.computeShaderPath_.has_value() && "Compute shader not set.");
 	
 	std::shared_ptr<ComputePipelineState> pso = std::make_shared<ComputePipelineState>(builder.id_);
-	pso->resMap_ = std::move(builder.resMap_);
-	pso->constantMap_ = std::move(builder.constantMap_);
-	pso->samplerMap_ = std::move(builder.samplerMap_);
-	pso->staticSamplerMap_ = std::move(builder.staticSamplerMap_);
+	pso->resMaps_ = std::move(builder.resMaps_);
+	pso->constantMaps_ = std::move(builder.constantMaps_);
+	pso->samplerMaps_ = std::move(builder.samplerMaps_);
+	pso->staticSamplerMaps_ = std::move(builder.staticSamplerMaps_);
+	
 	pso->threadCountX_ = std::move(builder.threadCountX_);
 	pso->threadCountY_ = std::move(builder.threadCountY_);
 	pso->threadCountZ_ = std::move(builder.threadCountZ_);
@@ -762,8 +769,8 @@ winrt::com_ptr<T> dx12_init::CreateDevice(winrt::com_ptr<IDXGIAdapter4> adapter,
 	new_filter.DenyList.NumIDs = _countof(deny_ids);
 	new_filter.DenyList.pIDList = deny_ids;
  
-	hr = infoQueue->PushStorageFilter(&new_filter);
-	CHECK_HR_NULL(hr);
+	//hr = infoQueue->PushStorageFilter(&new_filter);
+	//CHECK_HR_NULL(hr);
 
 	return device;
 }

@@ -8,6 +8,12 @@
 #include <winrt/windows.foundation.h>
 
 class Resource;
+struct DescriptorConfiguration;
+struct ShaderRegister;
+struct ShaderRegisterHasher;
+
+template <typename T>
+using PipelineResourceMap = std::unordered_map<ShaderRegister, T, ShaderRegisterHasher>;
 
 enum class ShaderType {
     Vertex,
@@ -49,6 +55,29 @@ enum class ResourceDescriptorType {
     NumResourceDescriptorTypes
 };
 
+inline std::string ResourceDescriptorTypeToString(ResourceDescriptorType type) {
+    switch(type) {
+    case ResourceDescriptorType::SRV:
+        return "SRV";
+    case ResourceDescriptorType::CBV:
+        return "CBV";
+    case ResourceDescriptorType::UAV:
+        return "UAV";
+    case ResourceDescriptorType::Sampler:
+        return "Sampler";
+    case ResourceDescriptorType::RenderTarget:
+        return "RenderTarget";
+    case ResourceDescriptorType::DepthStencil:
+        return "DepthStencil";
+    case ResourceDescriptorType::Unknown:
+        return "Unknown";
+    case ResourceDescriptorType::NumResourceDescriptorTypes:
+    default:
+        assert(false);
+        return "";
+    }
+}
+
 struct ShaderRegister {
     ResourceDescriptorType type;
     uint16_t regSpace;
@@ -61,6 +90,22 @@ struct ShaderRegister {
 
     bool operator<(const ShaderRegister& other) const {
         return memcmp(this, &other, sizeof(ShaderRegister)) < 0;
+    }
+    
+    bool operator==(const ShaderRegister& rhs) const {
+        return type == rhs.type && regSpace == rhs.regSpace && regNumber == rhs.regNumber;
+    }
+};
+
+struct ShaderRegisterHasher {
+    std::size_t operator()(const ShaderRegister& k) const {
+        return std::hash<std::string>()(
+            ResourceDescriptorTypeToString(k.type) +
+            "_" +
+            std::to_string(k.regNumber) +
+            "_" +
+            std::to_string(k.regSpace)
+        );
     }
 };
 
@@ -81,6 +126,7 @@ enum class ResourceBindMethod {
 struct ResourceInfo {
     std::weak_ptr<Resource> res;
     ResourceBindMethod bindMethod;
+    std::shared_ptr<DescriptorConfiguration> descriptorConfig;
 };
 
 struct RootConstantInfo {

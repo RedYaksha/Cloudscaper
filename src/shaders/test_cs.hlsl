@@ -23,5 +23,5 @@ void main( ComputeShaderInput IN )
         return;
     }
     
-    outTex[cell.xy] = colorTex[cell.xy] * float4(1.5, 0.3, 0.3, 1);
+    outTex[cell.xy] = colorTex[cell.xy]; // * float4(1.5, 0.3, 0.3, 1);
 }

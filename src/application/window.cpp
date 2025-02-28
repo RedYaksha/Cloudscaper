@@ -70,6 +70,7 @@ void Window::Show() {
 	ShowWindow(hwnd_, SW_SHOW);
 }
 
+
 LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	switch(uMsg) {
 	case WM_SIZE:
@@ -89,6 +90,8 @@ LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 			KeyEvent e;
 			e.type = KeyEventType::Down;
 			e.key = wParam;
+
+			std::cout << wParam << std::endl;
 			
 			for(const auto& func : keyDownCallbacks_) {
 				func(e);
@@ -101,7 +104,7 @@ LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 			e.type = KeyEventType::Up;
 			e.key = wParam;
 			
-			for(const auto& func : keyDownCallbacks_) {
+			for(const auto& func : keyUpCallbacks_) {
 				func(e);
 			}
 		}

@@ -120,6 +120,7 @@ void StaticMemoryAllocator::OnResourceCreated(std::shared_ptr<Resource> newResou
         InitializeDynamicResource(newResource);
         
         newResource->HandleDynamicUpload();
+        newResource->SetIsReady(true);
     }
 }
 

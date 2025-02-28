@@ -30,6 +30,7 @@ std::weak_ptr<DescriptorHeapAllocation> StaticDescriptorAllocator::Allocate(uint
     
     // check if we have enough space for the allocation
     if(curIndex_ + numDescriptors > size_) {
+        WINRT_ASSERT("Ran out of static descriptor space!" && false);
         return std::weak_ptr<DescriptorHeapAllocation>();
     }
     

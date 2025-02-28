@@ -36,8 +36,12 @@ public:
     struct State {
         StateType type;
         std::string msg;
+
+        // array of an array of RootParameters,
+        // A container of groups of RootParameters, where there
+        // are X elements in the container for each resource configuration.
+        std::vector<std::vector<std::shared_ptr<RootParameter>>> rootParams;
         
-        std::vector<std::shared_ptr<RootParameter>> rootParams;
         winrt::com_ptr<ID3D12RootSignature> rootSignature;
         winrt::com_ptr<ID3D12PipelineState> pipelineState;
     };
@@ -49,7 +53,8 @@ public:
     :
     type_(type),
     future_(promise_.get_future()),
-    id_(std::move(id)) 
+    id_(std::move(id)),
+    resConfigInd_(0)
     {}
 
     // are all resources (shaders, pipelines, ) created and ready to go?
@@ -78,7 +83,13 @@ public:
 
     bool AreAllResourcesReady() const;
     
-
+    const std::string& GetID() const { return id_; }
+    void SetResourceConfigurationIndex(uint32_t ind) {
+        WINRT_ASSERT(ind >= 0 && ind < GetNumResourceConfigurations());
+        resConfigInd_ = ind;
+    }
+    uint32_t GetNumResourceConfigurations() const { return resMaps_.size(); }
+    
 private:
     friend PipelineAssembler;
     virtual std::weak_ptr<Shader> GetShaderForHLSLRootSignatures() const = 0;
@@ -92,14 +103,17 @@ private:
     std::string id_;
 
     friend Renderer;
-    std::map<ShaderRegister, ResourceInfo> resMap_;
-    std::map<ShaderRegister, RootConstantInfo> constantMap_;
-    std::map<ShaderRegister, D3D12_SAMPLER_DESC> samplerMap_;
-    std::map<ShaderRegister, D3D12_SAMPLER_DESC> staticSamplerMap_;
-    
+    std::vector<PipelineResourceMap<ResourceInfo>> resMaps_;
+    std::vector<PipelineResourceMap<RootConstantInfo>> constantMaps_;
+    std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>> samplerMaps_;
+    std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>> staticSamplerMaps_;
 
     RenderTargetGroupID rtGroupId_;
     ResourceID depthId_;
+
+    std::optional<D3D12_BLEND_DESC> blendDesc_;
+
+    uint32_t resConfigInd_;
 };
 
 class GraphicsPipelineState : public PipelineState {
@@ -116,6 +130,8 @@ public:
 
     void Execute(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) override;
     void SetNumInstances(uint32_t numInstances) { numInstances_ = numInstances; }
+
+    void InitializeVertexAndIndexBufferDescriptors();
 
 private:
     friend Renderer;

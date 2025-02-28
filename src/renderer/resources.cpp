@@ -1,5 +1,8 @@
 ﻿#include "directx/d3dx12.h"
 #include "resources.h"
+
+#include <iostream>
+
 #include "windows.h"
 #include "wincodec.h"
 
@@ -11,20 +14,21 @@ winrt::com_ptr<ID3D12Resource> Resource::GetNativeResource() {
 }
 
 bool Resource::CreateDescriptorByResourceType(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
-                                              ResourceDescriptorType descriptorType) const {
+                                              ResourceDescriptorType descriptorType,
+                                              std::shared_ptr<DescriptorConfiguration> configData) const {
     switch(descriptorType) {
     case ResourceDescriptorType::SRV:
-        return CreateShaderResourceView(cpuHandle);
+        return CreateShaderResourceView(cpuHandle, configData);
     case ResourceDescriptorType::UAV:
-        return CreateUnorderedAccessView(cpuHandle);
+        return CreateUnorderedAccessView(cpuHandle, configData);
     case ResourceDescriptorType::CBV:
-        return CreateConstantBufferView(cpuHandle);
+        return CreateConstantBufferView(cpuHandle, configData);
     case ResourceDescriptorType::Sampler:
-        return CreateSamplerView(cpuHandle);
+        return CreateSamplerView(cpuHandle, configData);
     case ResourceDescriptorType::RenderTarget:
-        return CreateRenderTargetView(cpuHandle);
+        return CreateRenderTargetView(cpuHandle, configData);
     case ResourceDescriptorType::DepthStencil:
-        return CreateDepthStencilView(cpuHandle);
+        return CreateDepthStencilView(cpuHandle, configData);
     default:
         return false;
     }
@@ -64,7 +68,7 @@ Texture2D::Texture2D(DXGI_FORMAT format, uint32_t width, uint32_t height, bool u
 
 D3D12_RESOURCE_DESC Texture2D::CreateResourceDesc() const {
     CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(
-                                    format_, width_, height_);
+                                    format_, width_, height_, 1, 1);
 
     if(useAsUAV_) {
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -74,7 +78,8 @@ D3D12_RESOURCE_DESC Texture2D::CreateResourceDesc() const {
 }
 
 bool Texture2D::CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
-    winrt::com_ptr<ID3D12Device> device) const {
+                                                       winrt::com_ptr<ID3D12Device> device,
+                                                       std::shared_ptr<DescriptorConfiguration> configData) const {
     
     D3D12_SHADER_RESOURCE_VIEW_DESC desc;
     desc.Format = format_;
@@ -91,7 +96,8 @@ bool Texture2D::CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HAND
 }
 
 bool Texture2D::CreateUnorderedAccessViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
-    winrt::com_ptr<ID3D12Device> device) const {
+                                                        winrt::com_ptr<ID3D12Device> device,
+                                                        std::shared_ptr<DescriptorConfiguration> configData) const {
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
     desc.Format = format_;
@@ -142,16 +148,23 @@ void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdL
     winrt::check_hresult(hr);
 
     // force 32 bpp = R8B8G8A8
-    const uint32_t bpp = 32;
+    // 128 bpp = R32B32G32A32
+    const uint32_t bpp = 32; // 32;
     WICPixelFormatGUID finalPixelFmt;
     
     // Aside: memcpy_s is the more secure version, and WICPixelFormatGUID == GUID, constants are GUID hence the type difference
     // memcpy_s(&finalPixelFmt, sizeof(WICPixelFormatGUID), &pixelFormat, sizeof(GUID));
     memcpy_s(&finalPixelFmt, sizeof(WICPixelFormatGUID), &GUID_WICPixelFormat32bppRGBA, sizeof(GUID));
-    
+    // memcpy_s(&finalPixelFmt, sizeof(WICPixelFormatGUID), &GUID_WICPixelFormat128bppRGBAFloat, sizeof(GUID));
+
     // resolve size
     // adding 7 dividing 8 => rounds up for a valid byte count
     uint32_t rowPitch = (width_ * bpp + 7u) / 8u;
+    uint32_t cbStride = ((bpp * width_ + 31) >> 3) & 0xFFFFFFFC;
+    uint32_t b = GetBitsPerPixel(pixelFormat);
+
+    std::cout << cbStride << " -- " << b << std::endl;
+    
     uint32_t totalBytes = rowPitch * height_;
 
     // prepare srcData container, receiving the data
@@ -165,7 +178,8 @@ void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdL
     assert(totalBytes <= uploadDesc.Height * uploadDesc.Width);
 
     // (For now) only support RGBA32
-    if(memcmp(&pixelFormat, &finalPixelFmt, sizeof(GUID)) != 0) {
+    // if(memcmp(&pixelFormat, &finalPixelFmt, sizeof(GUID)) != 0) {
+    if(!IsEqualGUID(pixelFormat, finalPixelFmt)) {
         // convert
         winrt::com_ptr<IWICImagingFactory> imgFactory = winrt::create_instance<IWICImagingFactory>(CLSID_WICImagingFactory);
         winrt::com_ptr<IWICFormatConverter> converter;
@@ -181,7 +195,7 @@ void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdL
         hr = converter->Initialize(frame.get(), finalPixelFmt, WICBitmapDitherTypeErrorDiffusion, NULL, 0, WICBitmapPaletteTypeMedianCut);
         CHECK_HR(hr);
 
-        converter->CopyPixels(NULL, rowPitch, totalBytes, static_cast<unsigned char*>(uploadSrc_));
+        hr = converter->CopyPixels(NULL, rowPitch, totalBytes, static_cast<unsigned char*>(uploadSrc_));
         CHECK_HR(hr);
     }
     else {
@@ -193,15 +207,15 @@ void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdL
     winrt::com_ptr<ID3D12Device> device;
     hr = res_->GetDevice(__uuidof(ID3D12Device), device.put_void());
     CHECK_HR(hr);
-    
+
     // use the destination's layout, ie interpret our buffer of raw bytes as a resource with
     // destination's Width, Height, etc. - for an accurate copy
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT dstPlacedFootprint;
     D3D12_RESOURCE_DESC resDesc = res_->GetDesc();
     device->GetCopyableFootprints(&resDesc, 0, 1, 0, &dstPlacedFootprint, NULL, NULL, NULL);
-    CD3DX12_TEXTURE_COPY_LOCATION srcLoc = CD3DX12_TEXTURE_COPY_LOCATION(uploadRes_.get(), dstPlacedFootprint);
     
     CD3DX12_TEXTURE_COPY_LOCATION dstLoc = CD3DX12_TEXTURE_COPY_LOCATION(res_.get(), 0);
+    CD3DX12_TEXTURE_COPY_LOCATION srcLoc = CD3DX12_TEXTURE_COPY_LOCATION(uploadRes_.get(), dstPlacedFootprint);
     cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, NULL);
 } 
 
@@ -245,6 +259,32 @@ winrt::com_ptr<IWICBitmapFrameDecode> ImageTexture2D::GetWICFrame() const {
     return frame;
 }
 
+uint32_t ImageTexture2D::GetBitsPerPixel(const GUID& guid) const {
+    winrt::com_ptr<IWICImagingFactory> imgFactory = winrt::create_instance<IWICImagingFactory>(CLSID_WICImagingFactory);
+    winrt::com_ptr<IWICComponentInfo> componentInfo;
+    HRESULT hr;
+    hr = imgFactory->CreateComponentInfo(guid, componentInfo.put());
+    WINRT_ASSERT(SUCCEEDED(hr));
+
+    WICComponentType type;
+    hr = componentInfo->GetComponentType(&type);
+    WINRT_ASSERT(SUCCEEDED(hr));
+
+    WINRT_ASSERT(type == WICPixelFormat);
+
+    winrt::com_ptr<IWICPixelFormatInfo> pixelFormatInfo;
+    componentInfo.as(pixelFormatInfo);
+
+    UINT bpp;
+    hr = pixelFormatInfo->GetBitsPerPixel(&bpp);
+    WINRT_ASSERT(SUCCEEDED(hr));
+
+    UINT numChannels;
+    pixelFormatInfo->GetChannelCount(&numChannels);
+    // std::cout << "bpp: " << bpp << " channels: " << numChannels << std::endl;
+    return bpp;
+}
+
 void ImageTexture2D::FreeSourceData() {
 
 }
@@ -255,8 +295,8 @@ RenderTarget::RenderTarget(winrt::com_ptr<ID3D12Resource> res, D3D12_RESOURCE_ST
 }
 
 bool RenderTarget::CreateRenderTargetViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
-    winrt::com_ptr<ID3D12Device> device) const {
-    
+                                                        winrt::com_ptr<ID3D12Device> device,
+                                                        std::shared_ptr<DescriptorConfiguration> configData) const {
     D3D12_RESOURCE_DESC resDesc = res_->GetDesc();
     
     D3D12_RENDER_TARGET_VIEW_DESC desc;
@@ -296,7 +336,8 @@ bool DepthBuffer::GetOptimizedClearValue(D3D12_CLEAR_VALUE& clearVal) const {
 }
 
 bool DepthBuffer::CreateDepthStencilViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
-                                                       winrt::com_ptr<ID3D12Device> device) const {
+                                                       winrt::com_ptr<ID3D12Device> device,
+                                                       std::shared_ptr<DescriptorConfiguration> configData) const {
 
     D3D12_DEPTH_STENCIL_VIEW_DESC desc;
     desc.Format = format_;
@@ -305,6 +346,16 @@ bool DepthBuffer::CreateDepthStencilViewImplementation(D3D12_CPU_DESCRIPTOR_HAND
     desc.Flags = D3D12_DSV_FLAG_NONE;
     
     device->CreateDepthStencilView(res_.get(), &desc, cpuHandle);
+    return true;
+}
+
+bool Buffer::CreateConstantBufferViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                    winrt::com_ptr<ID3D12Device> device,
+                                                    std::shared_ptr<DescriptorConfiguration> configData) const {
+    D3D12_CONSTANT_BUFFER_VIEW_DESC desc;
+    desc.BufferLocation = res_->GetGPUVirtualAddress();
+    desc.SizeInBytes = GetSizeInBytes();
+    device->CreateConstantBufferView(&desc, cpuHandle);
     return true;
 }
 
@@ -325,16 +376,16 @@ void StaticBuffer::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdLis
 }
 
 
-D3D12_RESOURCE_DESC DynamicBuffer::CreateResourceDesc() const {
+D3D12_RESOURCE_DESC DynamicBufferBase::CreateResourceDesc() const {
     const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(resourceSizeInBytes_, D3D12_RESOURCE_FLAG_NONE);
     return desc;
 }
 
-void DynamicBuffer::HandleDynamicUpload() {
+void DynamicBufferBase::HandleDynamicUpload() {
     memcpy(dynamicResMappedPtr_, GetSourceData(), GetSizeInBytes());
 }
 
-void DynamicBuffer::UpdateGPUData() {
+void DynamicBufferBase::UpdateGPUData() {
     // call the callback (should have been set when this resource was made)
     //
     // This makes sure we have an up to date native resource, and a valid mapped pointer
@@ -369,5 +420,66 @@ bool IndexBufferBase::CreateIndexBufferDescriptor(D3D12_INDEX_BUFFER_VIEW& outVi
     }
 
     outView.Format = format;
+    return true;
+}
+
+Texture3D::Texture3D(DXGI_FORMAT format, uint32_t width, uint32_t height, uint32_t depth, bool useAsUAV,
+    uint32_t numMips, D3D12_RESOURCE_STATES initialState)
+: format_(format), width_(width), height_(height), depth_(depth), numMips_(numMips), useAsUAV_(useAsUAV) {
+    
+    isReady_ = false;
+    state_ = initialState;
+}
+
+D3D12_RESOURCE_DESC Texture3D::CreateResourceDesc() const {
+    CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex3D(format_, width_, height_, depth_, numMips_);
+    
+    if(useAsUAV_) {
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    }
+
+    return desc;
+}
+
+bool Texture3D::CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                       winrt::com_ptr<ID3D12Device> device,
+                                                       std::shared_ptr<DescriptorConfiguration> configData) const {
+    
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc;
+    desc.Format = format_;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    
+    desc.Texture3D.MipLevels = numMips_;
+    desc.Texture3D.MostDetailedMip = 0;
+    desc.Texture3D.ResourceMinLODClamp = 0.f;
+
+    device->CreateShaderResourceView(res_.get(), &desc, cpuHandle);
+    return true;
+}
+
+bool Texture3D::CreateUnorderedAccessViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                        winrt::com_ptr<ID3D12Device> device,
+                                                        std::shared_ptr<DescriptorConfiguration> configData) const {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
+    desc.Format = format_;
+    desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+    
+    if(configData) {
+        WINRT_ASSERT(configData->configType == DescriptorConfigType::Texture3D_UAV);
+        std::shared_ptr<Texture3D::UAVConfig> config = std::static_pointer_cast<Texture3D::UAVConfig>(configData);
+        
+        desc.Texture3D.MipSlice = config->mipSlice;
+        desc.Texture3D.WSize = config->depthSize;
+        desc.Texture3D.FirstWSlice = config->firstDepthSlice;
+    }
+    else {
+        desc.Texture3D.MipSlice = 0;
+        desc.Texture3D.WSize = depth_;
+        desc.Texture3D.FirstWSlice = 0;
+    }
+
+    device->CreateUnorderedAccessView(res_.get(), nullptr, &desc, cpuHandle);
+
     return true;
 }

@@ -101,6 +101,10 @@ public:
 
 
     const RootConstantValue<ninmath::Vector2f>& GetScreenSizeRootConstantValue() const { return screenSizeRCV_; }
+    const ninmath::Vector2f GetScreenSize() const {
+        auto v = screenSizeRCV_.GetValue();
+        return { v.x, v.y };
+    }
     
 private:
     Renderer(HWND hwnd, RendererConfig config, HRESULT& hr);

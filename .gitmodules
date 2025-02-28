@@ -1,3 +1,6 @@
 [submodule "third_party/DirectX-Headers"]
 	path = third_party/DirectX-Headers
 	url = https://github.com/microsoft/DirectX-Headers.git
+[submodule "third_party/artery-font-format"]
+	path = third_party/artery-font-format
+	url = https://github.com/Chlumsky/artery-font-format.git

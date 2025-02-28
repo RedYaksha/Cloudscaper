@@ -50,6 +50,8 @@ protected:
 template<IsResource T, class ... _Types>
 requires std::is_constructible_v<T, _Types...>
 std::weak_ptr<T> MemoryAllocator::CreateResource(std::string id, _Types&&... args) {
+    WINRT_ASSERT(!resourceMap_.contains(id));
+    
     if(resourceMap_.contains(id)) {
         return std::weak_ptr<T>();
     }

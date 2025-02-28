@@ -9,6 +9,7 @@
 #include "d3d12shader.h"
 #include "d3dcompiler.h"
 #include "shader_types.h"
+#include <filesystem>
 
 ShaderCompiler::ShaderCompiler() {
     threadPool_ = std::make_shared<ThreadPool<Shader::State>>();
@@ -49,6 +50,8 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
     std::cout << "Compiling " << shader->sourceFile_ << std::endl;;
 
     const std::string& sourceFile = shader->sourceFile_;
+
+    const std::wstring parentPath = std::filesystem::path(sourceFile).parent_path().wstring();
 
     // find file
     const DWORD fileAttrs = GetFileAttributes(sourceFile.c_str());
@@ -112,9 +115,20 @@ Shader::State ShaderCompiler::CompileShader(std::weak_ptr<Shader> inShader, std:
         
         L"-T", // profile
         profileArg.c_str(),
+
+        L"-I",
+        parentPath.c_str(),
         
+        L"-I",
+        L"shaders/",
+
+        L"-Fd \\",
+        
+        // TODO: config this
         DXC_ARG_PACK_MATRIX_ROW_MAJOR,
+        
         DXC_ARG_DEBUG,
+        L"-Qembed_debug",
     };
 
     std::vector<std::wstring> macroStrings;

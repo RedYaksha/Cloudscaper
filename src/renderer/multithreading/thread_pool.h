@@ -38,7 +38,10 @@ private:
 
 template <typename T>
 void ThreadPool<T>::AddTask(std::packaged_task<T()>&& job) {
-    tasks_.push(std::move(job));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        tasks_.push(std::move(job));
+    }
     condVar_.notify_one();
 }
 
@@ -110,8 +113,10 @@ void ThreadPool<T>::ThreadDoWork() {
             task = std::move(tasks_.front());
             tasks_.pop();
         }
-        
-        task();
+
+        if(task.valid()) {
+            task();
+        }
     }
 }
 

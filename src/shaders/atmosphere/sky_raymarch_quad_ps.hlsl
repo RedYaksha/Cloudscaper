@@ -22,7 +22,7 @@ struct RenderBuffer
 */
 
 ConstantBuffer<AtmosphereContext> atmosphere : register(b0);
-// ConstantBuffer<RenderBuffer> renderBuffer : register(b2);
+ConstantBuffer<SkyBuffer> gSky : register(b1);
 ConstantBuffer<RenderContext> renderContext : register(b2);
 
 float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
@@ -100,6 +100,7 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
         mapped = pow(mapped, 1.0 / gamma);
         const float3 srgb = ConvertToSRGB(L);
 
+        //return float4(1, 0, 0, 1.0);
         return float4(mapped, 1.0);
     }
 

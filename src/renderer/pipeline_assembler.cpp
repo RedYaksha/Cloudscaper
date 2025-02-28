@@ -24,7 +24,7 @@ struct DescriptorAllocationInfo {
     uint16_t offsetFromAllocBase;
 };
 
-typedef std::map<ShaderRegister, DescriptorAllocationInfo> RegisterToDescriptorAllocationMap;
+typedef PipelineResourceMap<DescriptorAllocationInfo> RegisterToDescriptorAllocationMap;
 
 struct DescriptorTableDescription {
     uint32_t paramIndex;
@@ -71,10 +71,10 @@ namespace {
                                                    RegisterToDescriptorAllocationMap& outAllocationMap);
     
     bool InitializeDescriptorAllocations(winrt::com_ptr<ID3D12Device> device,
-                                         // std::shared_ptr<PipelineState>& pso,
-                                         const std::map<ShaderRegister, ResourceInfo>& resMap,
-                                         const std::map<ShaderRegister, D3D12_SAMPLER_DESC>& samplerMap,
-                                         const RegisterToDescriptorAllocationMap& allocations);
+                                         const std::vector<PipelineResourceMap<ResourceInfo>>& resMapArr,
+                                         const std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>>& samplerMapArr,
+                                         const RegisterToDescriptorAllocationMap& allocations,
+                                         const uint32_t resolutionConfigIndex);
     
     bool InitializeDescriptorTableRootParameters(const std::vector<DescriptorTableDescription>& tables,
                                                  const bool& isCompute,
@@ -82,8 +82,9 @@ namespace {
 
     bool InitializeNonDescriptorTableRootParametersFromRootSignature(const D3D12_ROOT_SIGNATURE_DESC* rootSigDesc,
                                                                      const bool& isCompute,
-                                                                     const std::map<ShaderRegister, ResourceInfo>& resMap,
-                                                                     const std::map<ShaderRegister, RootConstantInfo>& constantMap,
+                                                                     const std::vector<PipelineResourceMap<ResourceInfo>>& resMapArr,
+                                                                     const std::vector<PipelineResourceMap<RootConstantInfo>>& constantMapArr,
+                                                                     const uint32_t resConfigIndex,
                                                                      std::vector<std::shared_ptr<RootParameter>>& outRootParameters);
 
     bool ComputeDescriptorRangesFromContinuousResources(const RootParameterUsageMap& usageMap,
@@ -95,10 +96,10 @@ namespace {
 
     void GenerateRootSignature(winrt::com_ptr<ID3D12Device> device,
                                const std::vector<std::weak_ptr<Shader>>& shaders,
-                               const std::map<ShaderRegister, ResourceInfo>& resMap,
-                               const std::map<ShaderRegister, RootConstantInfo>& constantMap,
-                               const std::map<ShaderRegister, D3D12_SAMPLER_DESC>& samplerMap,
-                               const std::map<ShaderRegister, D3D12_SAMPLER_DESC>& staticSamplerMap,
+                               const PipelineResourceMap<ResourceInfo>& resMap,
+                               const PipelineResourceMap<RootConstantInfo>& constantMap,
+                               const PipelineResourceMap<D3D12_SAMPLER_DESC>& samplerMap,
+                               const PipelineResourceMap<D3D12_SAMPLER_DESC>& staticSamplerMap,
                                winrt::com_ptr<ID3DBlob>& outRSBlob,
                                winrt::com_ptr<ID3D12RootSignature>& outRS);
 
@@ -130,13 +131,16 @@ void PipelineAssembler::Flush() {
 
         std::packaged_task<PipelineState::State()> task(std::bind(&PipelineAssembler::AssemblePipeline, this, pso, std::ref(statePromise)));
         // pso.lock()->future_ = task.get_future();
-        
+
+        std::cout << "Adding build PSO task: " << pso.lock()->GetID() << std::endl;
         threadPool_->AddTask(std::move(task));
     }
 }
 
 PipelineState::State PipelineAssembler::AssemblePipeline(std::weak_ptr<PipelineState> inPso, std::promise<PipelineState::State>& statePromise) {
     std::shared_ptr<PipelineState> pso = inPso.lock();
+
+    std::cout << "AssemblePipeline() : " << pso->GetID() << std::endl;
 
     std::vector<std::weak_ptr<Shader>> shaders;
     pso->GetShaders(shaders);
@@ -180,8 +184,8 @@ PipelineState::State PipelineAssembler::AssemblePipeline(std::weak_ptr<PipelineS
         rootSigSize = compileData->rootSigBlob->GetBufferSize();
         
         hr = device_->CreateRootSignature(0,
-            rsBlob->GetBufferPointer(),
-            rsBlob->GetBufferSize(),
+            compileData->rootSigBlob->GetBufferPointer(),
+            compileData->rootSigBlob->GetBufferSize(),
             __uuidof(ID3D12RootSignature),
             rootSig.put_void());
         winrt::check_hresult(hr);
@@ -189,10 +193,10 @@ PipelineState::State PipelineAssembler::AssemblePipeline(std::weak_ptr<PipelineS
     else {
         GenerateRootSignature(device_,
                               shaders,
-                              pso->resMap_,
-                              pso->constantMap_,
-                              pso->samplerMap_,
-                              pso->staticSamplerMap_,
+                              pso->resMaps_[0],
+                              pso->constantMaps_[0],
+                              pso->samplerMaps_[0],
+                              pso->staticSamplerMaps_[0],
                               rsBlob,
                               rootSig);
         
@@ -215,55 +219,62 @@ PipelineState::State PipelineAssembler::AssemblePipeline(std::weak_ptr<PipelineS
     std::shared_ptr<DescriptorAllocator> resDescriptorAllocator = resourceDescriptorAllocator_.lock();
     std::shared_ptr<DescriptorAllocator> samplerDescriptorAllocator = samplerDescriptorAllocator_.lock();
     
-    std::vector<DescriptorTableDescription> descriptorTables;
-    RegisterToDescriptorAllocationMap allocationMap;
-
-    {
+    const bool isCompute = pso->type_ == PipelineStateType::Compute;
+    std::vector<std::vector<std::shared_ptr<RootParameter>>> rootParametersArr;
+    rootParametersArr.resize(pso->GetNumResourceConfigurations());
+    
+    for(int curConfigIndex = 0 ; curConfigIndex < pso->GetNumResourceConfigurations(); curConfigIndex++) {
+        RegisterToDescriptorAllocationMap allocationMap;
+        std::vector<DescriptorTableDescription> descriptorTables;
+        
         //
         // resource descriptor tables
         //
         ::ExtractAllRootSignatureDescriptorTablesWithType(rootSigDesc,
                                                           ::resourceRangeTypes,
                                                           descriptorTables);
-
+        
         // allocate descriptors for all descriptor tables
         ::CreateDescriptorAllocationsFromTables(resDescriptorAllocator,
                                                 descriptorTables,
                                                 allocationMap);
-
+        
         //
         // sampler descriptor tables
         //
         ::ExtractAllRootSignatureDescriptorTablesWithType(rootSigDesc,
                                                           ::samplerRangeTypes,
                                                           descriptorTables);
+        
 
         // allocate descriptors for all descriptor tables
         ::CreateDescriptorAllocationsFromTables(samplerDescriptorAllocator,
                                                 descriptorTables,
                                                 allocationMap);
+        
+        // init descriptors, according to linked resources
+        bool success = ::InitializeDescriptorAllocations(device_,
+                                                         pso->resMaps_,
+                                                         pso->samplerMaps_,
+                                                         allocationMap,
+                                                         curConfigIndex);
+        WINRT_ASSERT(success);
+        
+        // create RootParameters so pipeline knows what to bind at render time
+        std::vector<std::shared_ptr<RootParameter>>& rootParams = rootParametersArr[curConfigIndex];
+        
+        ::InitializeDescriptorTableRootParameters(descriptorTables,
+                                                  isCompute,
+                                                  rootParams);
+
+        // create all the other RootParameters that are non-descriptor table
+        ::InitializeNonDescriptorTableRootParametersFromRootSignature(rootSigDesc,
+                                                                      isCompute,
+                                                                      pso->resMaps_,
+                                                                      pso->constantMaps_,
+                                                                      curConfigIndex,
+                                                                      rootParams);
     }
-
-    // init descriptors, according to linked resources
-    bool success = ::InitializeDescriptorAllocations(device_,
-                                                     pso->resMap_,
-                                                     pso->samplerMap_,
-                                                     allocationMap);
-    WINRT_ASSERT(success);
-    
-    // create RootParameters so pipeline knows what to bind at render time
-    std::vector<std::shared_ptr<RootParameter>> rootParams;
-    const bool isCompute = pso->type_ == PipelineStateType::Compute;
-    ::InitializeDescriptorTableRootParameters(descriptorTables,
-                                              isCompute,
-                                              rootParams);
-
-    // create all the other RootParameters that are non-descriptor table
-    ::InitializeNonDescriptorTableRootParametersFromRootSignature(rootSigDesc,
-                                                                  isCompute,
-                                                                  pso->resMap_,
-                                                                  pso->constantMap_,
-                                                                  rootParams);
 
     winrt::com_ptr<ID3D12PipelineState> pipeline;
     if(isCompute) {
@@ -282,261 +293,22 @@ PipelineState::State PipelineAssembler::AssemblePipeline(std::weak_ptr<PipelineS
 
         InitializeVertexAndIndexBuffers(std::static_pointer_cast<GraphicsPipelineState>(pso));
     }
-
+    
     WINRT_ASSERT(pipeline);
+
+    std::wstring psoID(pso->GetID().begin(), pso->GetID().end());
+    hr = pipeline->SetName(psoID.c_str());
+    WINRT_ASSERT(SUCCEEDED(hr));
 
     PipelineState::State out;
     out.type = PipelineState::StateType::Ok;
     out.msg = "";
-    out.rootParams = std::move(rootParams);
+    out.rootParams = std::move(rootParametersArr);
     out.rootSignature = rootSig;
     out.pipelineState = pipeline;
     statePromise.set_value(out);
     
     return out;
-}
-
-void PipelineAssembler::AssembleGraphicsPipeline(std::weak_ptr<GraphicsPipelineState> inPso,
-                                                 std::promise<PipelineState::State>& statePromise) {
-    
-    WINRT_ASSERT(!resourceDescriptorAllocator_.expired());
-    std::shared_ptr<DescriptorAllocator> resDescriptorAllocator = resourceDescriptorAllocator_.lock();
-    std::shared_ptr<DescriptorAllocator> samplerDescriptorAllocator = samplerDescriptorAllocator_.lock();
-    std::shared_ptr<GraphicsPipelineState> pso = inPso.lock();
-    std::shared_ptr<PipelineState> basePso = pso;
-
-    HRESULT hr;
-    
-
-    // TODO: always assume vertex shader's root signature (if any)?
-    
-    std::shared_ptr<Shader::CompilationData> compileData = pso->vertexShader_.lock()->GetState_Block().compileData;
-
-    if(compileData->rootSigBlob) {
-        // HLSL defined RootSignatures - create proper descriptor data (tables, root params, etc.)
-        const LPVOID rootSigPtr = compileData->rootSigBlob->GetBufferPointer();
-        const SIZE_T rootSigSize = compileData->rootSigBlob->GetBufferSize();
-        
-        winrt::com_ptr<ID3D12RootSignature> rootSig;
-        hr = device_->CreateRootSignature(0,
-            rootSigPtr,
-            rootSigSize,
-            __uuidof(ID3D12RootSignature),
-            rootSig.put_void());
-        winrt::check_hresult(hr);
-        
-        winrt::com_ptr<ID3D12RootSignatureDeserializer> deserializer;
-        hr = D3D12CreateRootSignatureDeserializer(rootSigPtr, rootSigSize, __uuidof(ID3D12RootSignatureDeserializer), deserializer.put_void());
-        winrt::check_hresult(hr);
-
-        const D3D12_ROOT_SIGNATURE_DESC* rootSigDesc = deserializer->GetRootSignatureDesc();
-
-        // get all descriptor tables
-        std::vector<DescriptorTableDescription> descriptorTables;
-        RegisterToDescriptorAllocationMap allocationMap;
-
-        {
-            //
-            // resource descriptor tables
-            //
-            ::ExtractAllRootSignatureDescriptorTablesWithType(rootSigDesc,
-                                                              ::resourceRangeTypes,
-                                                              descriptorTables);
-
-            // allocate descriptors for all descriptor tables
-            ::CreateDescriptorAllocationsFromTables(resDescriptorAllocator,
-                                                    descriptorTables,
-                                                    allocationMap);
-
-            //
-            // sampler descriptor tables
-            //
-            ::ExtractAllRootSignatureDescriptorTablesWithType(rootSigDesc,
-                                                              ::samplerRangeTypes,
-                                                              descriptorTables);
-
-            // allocate descriptors for all descriptor tables
-            ::CreateDescriptorAllocationsFromTables(samplerDescriptorAllocator,
-                                                    descriptorTables,
-                                                    allocationMap);
-        }
-
-        // init descriptors, according to linked resources
-        bool success = ::InitializeDescriptorAllocations(device_,
-                                                         basePso->resMap_,
-                                                         basePso->samplerMap_,
-                                                         allocationMap);
-        WINRT_ASSERT(success);
-        
-        // create RootParameters so pipeline knows what to bind at render time
-        std::vector<std::shared_ptr<RootParameter>> rootParams;
-        const bool isCompute = basePso->type_ == PipelineStateType::Compute;
-        ::InitializeDescriptorTableRootParameters(descriptorTables,
-                                                  isCompute,
-                                                  rootParams);
-
-        // create all the other RootParameters that are non-descriptor table
-        ::InitializeNonDescriptorTableRootParametersFromRootSignature(rootSigDesc,
-                                                                      isCompute,
-                                                                      basePso->resMap_,
-                                                                      basePso->constantMap_,
-                                                                      rootParams);
-        
-        std::cout << "root sig done" << std::endl;
-    }
-    else {
-        // given the resource usage, create a default root parameter configuration
-        // flags can be used to explicitly describe how a resource should be accessed (root parameter, tables, etc.)
-
-        // merge root parameter keys for all shaders in pipeline
-        std::vector<std::weak_ptr<Shader>> shaders;
-        pso->GetShaders(shaders);
-        RootParameterUsageMap usageMap = ::GetMergedRootParameterUsageMap(shaders);
-        std::vector<ShaderRegister> rootDescriptorDeclarations;
-
-        // filter the resources that are marked to be non-descriptor table
-        // (i.e. 32-bit constants and root-descriptor)
-        for(auto& [typeAndSpace,regNums] : usageMap) {
-            const ResourceDescriptorType& resType = std::get<0>(typeAndSpace);
-            const uint16_t& regSpace = std::get<1>(typeAndSpace);
-
-            auto removeNonTable = [&](uint16_t regNum)->bool {
-                const ShaderRegister shaderReg(resType, regSpace, regNum);
-
-                if(pso->resMap_.contains(shaderReg)) {
-                    if(pso->resMap_[shaderReg].bindMethod == ResourceBindMethod::RootDescriptor) {
-                        // remove from regNums, and add this shader register to root descriptors
-                        rootDescriptorDeclarations.push_back(shaderReg);
-                        return true; // remove
-                    }
-                }
-                return false; // keep
-            };
-
-            std::erase_if(regNums, removeNonTable);
-        }
-        
-        // then gather the continuous ones (w/ same type)
-        // bias towards create descriptor tables, unless specified otherwise (using flags)
-
-        std::vector<DescriptorRangeDescription> ranges;
-        ::ComputeDescriptorRangesFromContinuousResources(usageMap, ranges);
-
-        // Create one descriptor table for all resource ranges,
-        // Create another table for all sampler ranges
-        std::vector<D3D12_ROOT_PARAMETER1> rootParams;
-
-        std::vector<D3D12_DESCRIPTOR_RANGE1> resRanges;
-        std::vector<D3D12_DESCRIPTOR_RANGE1> samplerRanges;
-
-        ::InitializeDescriptorRanges(ranges, resourceRangeTypes, resRanges);
-        ::InitializeDescriptorRanges(ranges, samplerRangeTypes, samplerRanges);
-
-        uint32_t rootParamIndex = 0;
-
-        if(resRanges.size() > 0) {
-            CD3DX12_ROOT_PARAMETER1 param;
-            CD3DX12_ROOT_PARAMETER1::InitAsDescriptorTable(param, resRanges.size(), resRanges.data());
-            rootParams.push_back(param);
-        }
-        if(samplerRanges.size() > 0) {
-            CD3DX12_ROOT_PARAMETER1 param;
-            CD3DX12_ROOT_PARAMETER1::InitAsDescriptorTable(param, samplerRanges.size(), samplerRanges.data());
-            rootParams.push_back(param);
-        }
-
-        // Create non-table root parameters
-        for(const auto& rootDescShaderReg : rootDescriptorDeclarations) {
-            CD3DX12_ROOT_PARAMETER1 param;
-            
-            // TODO: match exactly where this resource is needed
-            D3D12_SHADER_VISIBILITY visibility = D3D12_SHADER_VISIBILITY_ALL;
-            D3D12_ROOT_DESCRIPTOR_FLAGS flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-            
-            switch(rootDescShaderReg.type) {
-            case ResourceDescriptorType::SRV:
-                param.InitAsShaderResourceView(rootDescShaderReg.regNumber, rootDescShaderReg.regSpace, flags, visibility);
-                break;
-            case ResourceDescriptorType::CBV:
-                param.InitAsConstantBufferView(rootDescShaderReg.regNumber, rootDescShaderReg.regSpace, flags, visibility);
-                break;
-            case ResourceDescriptorType::UAV:
-                param.InitAsUnorderedAccessView(rootDescShaderReg.regNumber, rootDescShaderReg.regSpace, flags, visibility);
-                break;
-            default:
-                break;
-            }
-
-            rootParams.push_back(param);
-        }
-
-        // root constants
-        for(const auto& [shaderReg, constantInfo]: pso->constantMap_) {
-            CD3DX12_ROOT_PARAMETER1 param;
-            D3D12_SHADER_VISIBILITY visibility = D3D12_SHADER_VISIBILITY_ALL;
-            param.InitAsConstants(constantInfo.num32BitValues, shaderReg.regNumber, shaderReg.regSpace, visibility);
-
-            rootParams.push_back(param);
-        }
-
-        // Create static samplers
-        std::vector<D3D12_STATIC_SAMPLER_DESC> staticSamplerDescs;
-        for(const auto& [shaderReg, sampler] : pso->staticSamplerMap_) {
-            D3D12_SHADER_VISIBILITY visiblity = D3D12_SHADER_VISIBILITY_ALL;
-            
-            D3D12_STATIC_SAMPLER_DESC desc {
-                .Filter = sampler.Filter,
-                .AddressU = sampler.AddressU,
-                .AddressV = sampler.AddressV,
-                .AddressW = sampler.AddressW,
-                .MipLODBias = sampler.MipLODBias,
-                .MaxAnisotropy = sampler.MaxAnisotropy,
-                .ComparisonFunc = sampler.ComparisonFunc,
-                .BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, // how to configure this?
-                .MinLOD = sampler.MinLOD,
-                .MaxLOD = sampler.MaxLOD,
-                .ShaderRegister = shaderReg.regNumber,
-                .RegisterSpace = shaderReg.regSpace,
-                .ShaderVisibility = visiblity,
-            };
-
-            staticSamplerDescs.push_back(desc);
-        }
-
-        // Construct Root signature
-        winrt::com_ptr<ID3DBlob> rsBlob;
-        winrt::com_ptr<ID3DBlob> errorBlob;
-
-        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC versionDesc;
-        versionDesc.Init_1_1(
-            rootParams.size(),
-            rootParams.data(),
-            staticSamplerDescs.size(),
-            staticSamplerDescs.data(),
-            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-        hr = D3DX12SerializeVersionedRootSignature(&versionDesc,
-                                                   D3D_ROOT_SIGNATURE_VERSION_1_1,
-                                                   rsBlob.put(),
-                                                   errorBlob.put()
-                                                  );
-        WINRT_ASSERT(hr);
-
-        winrt::com_ptr<ID3D12RootSignature> rootSig;
-        hr = device_->CreateRootSignature(0,
-                                          rsBlob->GetBufferPointer(),
-                                          rsBlob->GetBufferSize(),
-                                          __uuidof(ID3D12RootSignature),
-                                          rootSig.put_void());
-
-        // Continue to root signature processing...
-    }
-}
-
-void PipelineAssembler::AssembleComputePipeline(std::weak_ptr<ComputePipelineState> pso,
-    std::promise<PipelineState::State>& statePromise) {
-    
-    return;
 }
 
 std::vector<D3D12_INPUT_ELEMENT_DESC> PipelineAssembler::CreateGraphicsInputLayoutDesc(std::shared_ptr<GraphicsPipelineState> pso) {
@@ -627,7 +399,10 @@ winrt::com_ptr<ID3D12PipelineState> PipelineAssembler::CreateD3DGraphicsPipeline
 
     const uint32_t numRenderTargets = pso->renderTargetMap_.size();
 
-    const DXGI_FORMAT depthBufferFormat = pso->depthBuffer_.lock()->format;
+    DXGI_FORMAT depthBufferFormat = DXGI_FORMAT_UNKNOWN;
+    if(!pso->depthBuffer_.expired()) {
+        depthBufferFormat = pso->depthBuffer_.lock()->format;
+    }
 
     const DXGI_SAMPLE_DESC firstSampleDesc = pso->renderTargetMap_.begin()->second.lock()->sampleDesc;
 
@@ -647,12 +422,18 @@ winrt::com_ptr<ID3D12PipelineState> PipelineAssembler::CreateD3DGraphicsPipeline
                         };
 
     // TODO: configure settings (e.g. cull mode, blend state, etc.)
-    desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    desc.BlendState = pso->blendDesc_.value_or( CD3DX12_BLEND_DESC(D3D12_DEFAULT) );
+
+    
     desc.SampleMask = UINT_MAX;
     desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     desc.RasterizerState.FrontCounterClockwise = TRUE;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    if(pso->depthBuffer_.expired()) {
+        desc.DepthStencilState.DepthEnable = FALSE;
+        desc.DepthStencilState.StencilEnable = FALSE;
+    }
     desc.InputLayout = inputLayout;
     desc.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; // TODO
@@ -707,30 +488,7 @@ winrt::com_ptr<ID3D12PipelineState> PipelineAssembler::CreateD3DComputePipeline(
 }
 
 void PipelineAssembler::InitializeVertexAndIndexBuffers(std::shared_ptr<GraphicsPipelineState> pso) {
-    // vertex buffer views
-    pso->vertexBufferDescriptors_.clear();
-    for(const auto& [slotIndex, vb] : pso->vertexBufferMap_) {
-        std::shared_ptr<VertexBufferBase> vertexBuffer = vb.lock();
-        
-        D3D12_VERTEX_BUFFER_VIEW vbView;
-        vertexBuffer->CreateVertexBufferDescriptor(vbView);
-
-        pso->vertexBufferDescriptors_.push_back(vbView);
-
-        // a per-vertex buffer will give us the correct amount of vertices
-        if(vertexBuffer->GetUsage() == VertexBufferUsage::PerVertex) {
-            pso->numVertices_ = vertexBuffer->GetNumVertices();
-        }
-    }
-
-    // index buffer view (if it has one)
-    if(!pso->indexBuffer_.expired()) {
-        D3D12_INDEX_BUFFER_VIEW indexBufferView;
-        bool success = pso->indexBuffer_.lock()->CreateIndexBufferDescriptor(indexBufferView);
-        WINRT_ASSERT(success);
-
-        pso->indexBufferDescriptor_ = indexBufferView;
-    }
+    pso->InitializeVertexAndIndexBufferDescriptors();
 }
 
 bool PipelineAssembler::Enqueue(std::weak_ptr<PipelineState> pso) {
@@ -857,9 +615,10 @@ namespace {
     }
 
     bool InitializeDescriptorAllocations(winrt::com_ptr<ID3D12Device> device,
-                                         const std::map<ShaderRegister, ResourceInfo>& resMap,
-                                         const std::map<ShaderRegister, D3D12_SAMPLER_DESC>& samplerMap,
-                                         const RegisterToDescriptorAllocationMap& allocations) {
+                                         const std::vector<PipelineResourceMap<ResourceInfo>>& resMapArr,
+                                         const std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>>& samplerMapArr,
+                                         const RegisterToDescriptorAllocationMap& allocations,
+                                         const uint32_t resolutionConfigIndex) {
         WINRT_ASSERT(device);
                                          
         for(const auto& [shaderReg, val] : allocations) {
@@ -871,28 +630,44 @@ namespace {
             WINRT_ASSERT(success);
 
             // find resource or sampler
-            if(resMap.contains(shaderReg)) {
-                // find correct location in allocation
-                const ResourceInfo& resInfo = resMap.at(shaderReg);
-                WINRT_ASSERT(resInfo.bindMethod == ResourceBindMethod::Automatic ||
-                             resInfo.bindMethod == ResourceBindMethod::DescriptorTable);
+            bool foundShaderRegister = false;
 
-                WINRT_ASSERT(!resInfo.res.expired());
-                std::shared_ptr<const Resource> res = resInfo.res.lock();
+            ResourceInfo resInfo;
+            for(int i = resolutionConfigIndex; i >= 0 && !foundShaderRegister ; i--) {
+                const PipelineResourceMap<ResourceInfo>& resMap = resMapArr[i];
 
-                success = res->CreateDescriptorByResourceType(cpuHandle, shaderReg.type);
-                WINRT_ASSERT(success);
+                if(resMap.contains(shaderReg)) {
+                    // find correct location in allocation
+                    resInfo = resMap.at(shaderReg);
+                    
+                    WINRT_ASSERT(resInfo.bindMethod == ResourceBindMethod::Automatic ||
+                                 resInfo.bindMethod == ResourceBindMethod::DescriptorTable);
+
+                    WINRT_ASSERT(!resInfo.res.expired());
+                    std::shared_ptr<const Resource> res = resInfo.res.lock();
+
+                    success = res->CreateDescriptorByResourceType(cpuHandle, shaderReg.type, resInfo.descriptorConfig);
+                    WINRT_ASSERT(success);
+
+                    foundShaderRegister = true;
+                }
             }
-            else if(samplerMap.contains(shaderReg)) {
-                const D3D12_SAMPLER_DESC& samplerDesc = samplerMap.at(shaderReg);
-                device->CreateSampler(&samplerDesc, cpuHandle);
+            
+            for(int i = resolutionConfigIndex; i >= 0 && !foundShaderRegister ; i--) {
+                const PipelineResourceMap<D3D12_SAMPLER_DESC>& samplerMap = samplerMapArr[i];
+                if(samplerMap.contains(shaderReg)) {
+                    const D3D12_SAMPLER_DESC& samplerDesc = samplerMap.at(shaderReg);
+                    device->CreateSampler(&samplerDesc, cpuHandle);
+                    
+                    foundShaderRegister = true;
+                }
             }
-            else {
+            
+            if(!foundShaderRegister) {
                 std::cout << std::format("Failed to find shader register! ({},{},{})",
                     (uint8_t) shaderReg.type, shaderReg.regSpace, shaderReg.regNumber) << std::endl;
                 return false;
             }
-
         }
 
         return true;
@@ -919,9 +694,11 @@ namespace {
     
     bool InitializeNonDescriptorTableRootParametersFromRootSignature(const D3D12_ROOT_SIGNATURE_DESC* rootSigDesc,
                                                                      const bool& isCompute,
-                                                                     const std::map<ShaderRegister, ResourceInfo>& resMap,
-                                                                     const std::map<ShaderRegister, RootConstantInfo>& constantMap,
+                                                                     const std::vector<PipelineResourceMap<ResourceInfo>>& resMapArr,
+                                                                     const std::vector<PipelineResourceMap<RootConstantInfo>>& constantMapArr,
+                                                                     const uint32_t resConfigIndex,
                                                                      std::vector<std::shared_ptr<RootParameter>>& outRootParameters) {
+        
         static const std::map<D3D12_ROOT_PARAMETER_TYPE, ResourceDescriptorType> paramToResourceType = {
             {D3D12_ROOT_PARAMETER_TYPE_SRV, ResourceDescriptorType::SRV},
             {D3D12_ROOT_PARAMETER_TYPE_CBV, ResourceDescriptorType::CBV},
@@ -937,42 +714,69 @@ namespace {
             }
 
             if(rootParam.ParameterType == D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS) {
+
+                bool found = false;
+                
                 const ShaderRegister shaderReg(ResourceDescriptorType::CBV,
                                          rootParam.Constants.RegisterSpace,
                                          rootParam.Constants.ShaderRegister);
 
+                for(int constantMapInd = (int) resConfigIndex; constantMapInd >= 0; constantMapInd--) {
+                    const PipelineResourceMap<RootConstantInfo>& constantMap = constantMapArr[constantMapInd];
+                    if(!constantMap.contains(shaderReg)) {
+                        continue;
+                    }
+                    
+                    const RootConstantInfo& constantInfo = constantMap.at(shaderReg);
 
-                WINRT_ASSERT(constantMap.contains(shaderReg));
-                const RootConstantInfo& constantInfo = constantMap.at(shaderReg);
+                    WINRT_ASSERT(rootParam.Constants.Num32BitValues == constantInfo.num32BitValues);
+                    
+                    const auto newParam = std::make_shared<RootConstantsParameter>(i,
+                                                                                   isCompute,
+                                                                                   constantInfo.data,
+                                                                                   constantInfo.num32BitValues
+                                                                                   );
 
-                WINRT_ASSERT(rootParam.Constants.Num32BitValues == constantInfo.num32BitValues);
+                    found = true;
+                    outRootParameters.push_back(std::move(newParam));
+                    break; 
+                }
                 
-                const auto newParam = std::make_shared<RootConstantsParameter>(i,
-                                                                               isCompute,
-                                                                               constantInfo.data,
-                                                                               constantInfo.num32BitValues
-                                                                               );
-                
-                outRootParameters.push_back(std::move(newParam));
+                WINRT_ASSERT(found);
             }
             else {
-                WINRT_ASSERT(paramToResourceType.contains(rootParam.ParameterType));
+                bool found = false;
+                
+                for(int resMapInd = (int) resConfigIndex; resMapInd >= 0; resMapInd--) {
+                    const PipelineResourceMap<ResourceInfo>& resMap = resMapArr[resConfigIndex];
+                    
+                    WINRT_ASSERT(paramToResourceType.contains(rootParam.ParameterType));
 
-                const ResourceDescriptorType resType = paramToResourceType.at(rootParam.ParameterType);
-                // find resource
-                const ShaderRegister shaderReg(resType,
-                                         rootParam.Descriptor.RegisterSpace,
-                                         rootParam.Descriptor.ShaderRegister);
-                WINRT_ASSERT(resMap.contains(shaderReg));
+                    const ResourceDescriptorType resType = paramToResourceType.at(rootParam.ParameterType);
+                    // find resource
+                    const ShaderRegister shaderReg(resType,
+                                             rootParam.Descriptor.RegisterSpace,
+                                             rootParam.Descriptor.ShaderRegister);
 
-                const ResourceInfo& resInfo = resMap.at(shaderReg);
-                WINRT_ASSERT(!resInfo.res.expired());
+                    if(!resMap.contains(shaderReg)) {
+                        continue;
+                    }
+                    
+                    WINRT_ASSERT(resMap.contains(shaderReg));
 
-                const auto newParam = std::make_shared<RootDescriptorParameter>(i,
-                                                                                isCompute,
-                                                                                resInfo.res.lock()->GetNativeResource().get(),
-                                                                                resType);
-                outRootParameters.push_back(std::move(newParam));
+                    const ResourceInfo& resInfo = resMap.at(shaderReg);
+                    WINRT_ASSERT(!resInfo.res.expired());
+
+                    const auto newParam = std::make_shared<RootDescriptorParameter>(i,
+                                                                                    isCompute,
+                                                                                    resInfo.res.lock()->GetNativeResource().get(),
+                                                                                    resType);
+                    found = true;
+                    outRootParameters.push_back(std::move(newParam));
+                    break;
+                }
+
+                WINRT_ASSERT(found);
             }
         }
 
@@ -1066,10 +870,10 @@ namespace {
     
     void GenerateRootSignature(winrt::com_ptr<ID3D12Device> device,
                                                               const std::vector<std::weak_ptr<Shader>>& shaders,
-                                                              const std::map<ShaderRegister, ResourceInfo>& resMap,
-                                                              const std::map<ShaderRegister, RootConstantInfo>& constantMap,
-                                                              const std::map<ShaderRegister, D3D12_SAMPLER_DESC>& samplerMap,
-                                                              const std::map<ShaderRegister, D3D12_SAMPLER_DESC>& staticSamplerMap,
+                                                              const PipelineResourceMap<ResourceInfo>& resMap,
+                                                              const PipelineResourceMap<RootConstantInfo>& constantMap,
+                                                              const PipelineResourceMap<D3D12_SAMPLER_DESC>& samplerMap,
+                                                              const PipelineResourceMap<D3D12_SAMPLER_DESC>& staticSamplerMap,
                                                               winrt::com_ptr<ID3DBlob>& outRSBlob,
                                                               winrt::com_ptr<ID3D12RootSignature>& outRS) {
         // given the resource usage, create a default root parameter configuration

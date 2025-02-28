@@ -11,8 +11,7 @@ struct ComputeShaderInput
 #define TransmittanceLUT_RootSignature \
 "RootFlags(0), " \
 "DescriptorTable( UAV(u0, numDescriptors = 1) )," \
-"CBV(b0), " \
-"CBV(b1), " \
+"CBV(b0),"
 
 RWTexture2D<float4> transmittanceLUT : register(u0);
 ConstantBuffer<AtmosphereContext> atmosphere : register(b0);

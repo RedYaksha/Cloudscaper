@@ -5,12 +5,14 @@
 
 #include "pipeline_builder.h"
 #include "pipeline_state.h"
-#include "quad_primitive_renderer.h"
+#include "primitive_renderers/quad_primitive_renderer.h"
 #include "renderer.h"
+#include "primitive_renderers/text_primitive_renderer.h"
 #include "memory/memory_allocator.h"
 #include "widgets/button.h"
 #include "widgets/vertical_layout.h"
 #include "application/window.h"
+#include "primitive_renderers/rounded_rect_primitive_renderer.h"
 
 UIFramework::UIFramework(std::shared_ptr<Renderer> renderer,
                          std::shared_ptr<MemoryAllocator> memAllocator,
@@ -24,88 +26,44 @@ UIFramework::UIFramework(std::shared_ptr<Renderer> renderer,
     window_->AddKeyUpCallback(std::bind(&UIFramework::OnKeyUp, this, std::placeholders::_1));
     window_->AddMouseButtonDownCallback(std::bind(&UIFramework::OnMouseButtonDown, this, std::placeholders::_1));
     window_->AddMouseButtonUpCallback(std::bind(&UIFramework::OnMouseButtonUp, this, std::placeholders::_1));
+
+    fontManager_ = std::make_shared<FontManager>();
+    
+    // default font
+    const std::string fontAtlasSrc = "assets/fonts/Montserrat/sdf_atlas_montserrat_regular.png";
+    RegisterFont("Montserrat_Regular",
+                "assets/fonts/Montserrat/montserrat_regular.arfont",
+                fontAtlasSrc);
     
     quadRenderer_ = std::make_shared<QuadPrimitiveRenderer>(renderer_, memAllocator_);
-    
-    button0_ = CreateWidget<Button>("button0");
-    button0_->SetBackgroundColor({1,0,0,1});
-    button0_->SetHoverColor({0.7,0,0,1});
-    button0_->SetPressedColor({0.3,0,0,1});
-    
-    button1_ = CreateWidget<Button>("button1");
-    button1_->SetPadding({50, 5});
-    button1_->SetMargin({10, 10});
-    button1_->SetBackgroundColor({0,1,0,1});
-    button1_->SetHoverColor({0,0.7,0,1});
-    button1_->SetPressedColor({0,0.3,0,1});
-    
-    button2_ = CreateWidget<Button>("button2");
-    button2_->SetBackgroundColor({0,0,1,1});
-    button2_->SetHoverColor({0,0,0.7,1});
-    button2_->SetPressedColor({0,0,0.3,1});
+    textRenderer_ = std::make_shared<TextRectPrimitiveRenderer>(renderer_, memAllocator_, fontAtlasImageResourceMap_.at(fontAtlasSrc));
+    roundedRectPrimitiveRenderer_ = std::make_shared<RoundedRectPrimitiveRenderer>(renderer_, memAllocator_);
+}
 
-    rootWidget_ = CreateWidget<VerticalLayout>("Root Widget");
-    rootWidget_->SetGap(20);
+bool UIFramework::RegisterFont(FontID id, std::string arfontPath, std::string atlasImagePath) {
+    bool success = fontManager_->RegisterFont(id, arfontPath, atlasImagePath);
+    
+    if(!success) {
+        return false;
+    }
 
-    rootWidget_->AddChild(button0_, HorizontalAlignment::Right);
-    rootWidget_->AddChild(button1_, HorizontalAlignment::Center);
-    rootWidget_->AddChild(button2_, HorizontalAlignment::Center);
+    const ResourceID resId = atlasImagePath; // just use the image path as id
+    std::weak_ptr<Resource> res = memAllocator_->CreateResource<ImageTexture2D>(resId, atlasImagePath);
+    
+    if(res.expired()) {
+        return false;
+    }
+
+    fontAtlasImageResourceMap_.insert({atlasImagePath, res});
+
+    return true;
 }
 
 void UIFramework::Render(double deltaTime, winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) {
     // batch all primitives using Widget::Renderer and traversing down the tree from root - do it twice?
-    UIFrameworkBatcher batcher;
+    UIFrameworkBatcher batcher(fontManager_);
     rootWidget_->Render(deltaTime, batcher);
 
-    /*
-
-        uiFramework->CreateWidget<Button>("")
-        .MarginPc()
-        .Padding()
-        .Text("Click me")
-        .OnHover()
-        .OnClick()
-        .Create();
-
-        btn->SetMargin()
-        btn->SetPadding()
-        btn->Set
-
-
-        uiFramework->CreateWidget<VerticalLayout>("")
-        .Margin()
-        .Gap(50)
-        .
-
-        
-        
-        from root -> leaf
-
-        CalculateSize(curNode):
-             - goal 1: figure out my size
-                 - if directly computed,
-                    - return size with the computation (e.g. adding padding, margin, etc)
-                 - if depends on children,
-                    - for each child: CalculateSize(child)
-                    - compute my size, given all childrens' size
-
-        ResolvePosition(curNode) (only done by layouts or widgets that have children):
-            - goal: figure out my position 
-                - if directly computed (e.g. root is at (0,0))
-                    - return computation
-            - goal: set children's start position
-
-
-        Iterate tree from bottom.
-            if leaf, ComputeDesiredSize()
-            if layout,
-                -> ComputeDesiredSize() => ignore align fill
-                -> ResolveChildrenSize() => AlignFill children will be size_.x
-
-        Iterate tree from top.
-            if layout, ResolveChildrenPosition()
-    */
-    
     std::set<WidgetID> seen;
     std::queue<Widget*> queue;
     std::queue<Widget*> leafQueue;
@@ -135,7 +93,7 @@ void UIFramework::Render(double deltaTime, winrt::com_ptr<ID3D12GraphicsCommandL
     //
     // Iterate tree from bottom.
     // if leaf, ComputeDesiredSize()
-    // if layout,
+    // if layout (assume its children have already been processed),
     //     -> ComputeDesiredSize() => ignore align fill
     //     -> ResolveChildrenSize() => AlignFill children will be size_.x
     //
@@ -201,13 +159,32 @@ void UIFramework::Render(double deltaTime, winrt::com_ptr<ID3D12GraphicsCommandL
     // from batched primitives, render QuadPrimitiveRenderer...
     // depending on size changes... the native buffer resources may change... nonetheless, the data will be synced to the GPU buffer
     quadRenderer_->SetQuads(batcher.GetQuads());
+    textRenderer_->SetTextRects(batcher.GetTextRects());
+    roundedRectPrimitiveRenderer_->SetRoundedRects(batcher.GetRoundedRects());
     
     //
     quadRenderer_->Render(deltaTime, cmdList);
+    roundedRectPrimitiveRenderer_->Render(deltaTime, cmdList);
+    
+    textRenderer_->Render(deltaTime, cmdList);
 }
 
 void UIFramework::Tick(double deltaTime) {
     std::lock_guard<std::mutex> lockGuard(curFrameEventsMutex_);
+    
+    std::queue<Widget*> queue = std::queue<Widget*>();
+    queue.push(rootWidget_.get());
+    while(!queue.empty()) {
+        Widget* curNode = queue.front();
+        queue.pop();
+
+        curNode->Tick(deltaTime);
+
+        auto children = curNode->GetChildren();
+        for(auto& child : children) {
+            queue.push(child.get());
+        }
+    }   
 
     //
     for(auto& [id, widget] : widgetMap_) {
@@ -230,38 +207,59 @@ void UIFramework::Tick(double deltaTime) {
                 widget->SetIsHovered(false);
                 widget->OnMouseLeave();
             }
+
+            mostRecentMousePos_.x = e.posX;
+            mostRecentMousePos_.y = e.posY;
         }
 
         if(curFrameEvents_.mouseButtonDownEvent.has_value()) {
             const MouseButtonEvent& e = curFrameEvents_.mouseButtonDownEvent.value();
-            std::cout << "down" << std::endl;
 
             if(e.btn == MouseButton::Left) {
                 if(widget->IsHovered()) {
                     widget->OnPressed();
                     widget->SetIsPressed(true);
-                    std::cout << "pressed" << std::endl;
+
+                    if(widget->IsFocusable() && !widget->IsFocused()) {
+                        widget->SetIsFocused(true);
+                        widget->OnFocused();
+                    }
+                }
+                else {
+                    if(widget->IsFocusable() && widget->IsFocused()) {
+                        widget->OnUnfocused();
+                        widget->SetIsFocused(false);
+                    }
+                    
                 }
             }
         }
         if(curFrameEvents_.mouseButtonUpEvent.has_value()) {
             const MouseButtonEvent& e = curFrameEvents_.mouseButtonUpEvent.value();
-            std::cout << "up" << std::endl;
 
             if(e.btn == MouseButton::Left) {
                 if(widget->IsPressed()) {
                     widget->SetIsPressed(false);
-                    std::cout << "release" << std::endl;
-
+                    
                     // TODO: if mouse is still in the widget's hitbox, click()
                     // later... clicking focuses the top-most widget
-                    
+                    // depends how we want to handle clicks
+                    /*
+                    const ninmath::Vector2f hitboxPos = widget->GetHitboxPosition();
+                    const ninmath::Vector2f hitboxSize = widget->GetHitboxSize();
+                    const ninmath::Vector2f mousePos = ninmath::Vector2f {(float) mostRecentMousePos_.x, (float) mostRecentMousePos_.y};
+                    const bool mouseIsInHitbox = ninmath::IsPointInAxisAlignedRect(mousePos, hitboxPos, hitboxSize);
+                    */
                 }
             }
         }
+        
+        if(curFrameEvents_.keyDownEvent.has_value()) {
+            const KeyEvent& e = curFrameEvents_.keyDownEvent.value();
+            widget->OnKeyPressed(e);
+        }
     }
     
-
     curFrameEvents_.Reset();
 }
 
@@ -272,11 +270,13 @@ void UIFramework::OnMouseMoved(MouseEvent e) {
 }
 
 void UIFramework::OnKeyDown(KeyEvent e) {
-    
+    std::lock_guard<std::mutex> lockGuard(curFrameEventsMutex_);
+    curFrameEvents_.keyDownEvent = e;
 }
 
 void UIFramework::OnKeyUp(KeyEvent e) {
-    
+    std::lock_guard<std::mutex> lockGuard(curFrameEventsMutex_);
+    curFrameEvents_.keyUpEvent = e;
 }
 
 void UIFramework::OnMouseButtonDown(MouseButtonEvent e) {

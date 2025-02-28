@@ -14,18 +14,21 @@ void PipelineState::Execute(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) {
     
     // execute all root parameters
     const auto& rootParams = GetState_Block().rootParams;
-    for(auto& rp : rootParams) {
+    for(auto& rp : rootParams[resConfigInd_]) {
         rp->Execute(cmdList);
     }
 
 }
 
 bool PipelineState::AreAllResourcesReady() const {
-    for(const auto& [ignore, resInfo] : resMap_) {
-        if(!resInfo.res.lock()->IsReady()) {
-            return false;
+    for(const auto& resMap_ : resMaps_) {
+        for(const auto& [ignore, resInfo] : resMap_) {
+            if(!resInfo.res.lock()->IsReady()) {
+                return false;
+            }
         }
     }
+    
     return true;
 }
 
@@ -84,6 +87,33 @@ void GraphicsPipelineState::Execute(winrt::com_ptr<ID3D12GraphicsCommandList> cm
     else {
         WINRT_ASSERT(numVertices_.has_value());
         cmdList->DrawInstanced(numVertices_.value(), numInstances_, 0, 0);
+    }
+}
+
+void GraphicsPipelineState::InitializeVertexAndIndexBufferDescriptors() {
+    // vertex buffer views
+    vertexBufferDescriptors_.clear();
+    for(const auto& [slotIndex, vb] : vertexBufferMap_) {
+        std::shared_ptr<VertexBufferBase> vertexBuffer = vb.lock();
+        
+        D3D12_VERTEX_BUFFER_VIEW vbView;
+        vertexBuffer->CreateVertexBufferDescriptor(vbView);
+
+        vertexBufferDescriptors_.push_back(vbView);
+
+        // a per-vertex buffer will give us the correct amount of vertices
+        if(vertexBuffer->GetUsage() == VertexBufferUsage::PerVertex) {
+            numVertices_ = vertexBuffer->GetNumVertices();
+        }
+    }
+
+    // index buffer view (if it has one)
+    if(!indexBuffer_.expired()) {
+        D3D12_INDEX_BUFFER_VIEW indexBufferView;
+        bool success = indexBuffer_.lock()->CreateIndexBufferDescriptor(indexBufferView);
+        WINRT_ASSERT(success);
+
+        indexBufferDescriptor_ = indexBufferView;
     }
 }
 

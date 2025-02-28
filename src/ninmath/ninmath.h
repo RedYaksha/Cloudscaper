@@ -229,6 +229,15 @@ Vector3f operator- (Vector3f v, const T s) {
     return -s + v;
 }
 
+template <typename T>
+Vector4f operator *(const T s, Vector4f v) {
+    return Vector4f {
+        v.x * s,
+        v.y * s,
+        v.z * s,
+        v.w * s
+    };
+}
 
 // row-major
 typedef struct Matrix4x4f {

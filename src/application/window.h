@@ -2,7 +2,7 @@
 #define APPLICATION_WINDOW_H_
 
 #include <functional>
-#include <memory>
+#define NOMINMAX
 #include "windows.h"
 #include <string>
 #include <vector>

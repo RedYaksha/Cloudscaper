@@ -4,9 +4,16 @@
 #include <iostream>
 #include "comdef.h"
 
+
+UINT64 ticksPerSecond = 0;
+UINT64 prevTime = 0;
+
 Application::Application(HINSTANCE hinst, const ApplicationParams& params)
 : hinst_(hinst) {
 	appName_ = params.appName;
+	
+    assert(::QueryPerformanceFrequency((LARGE_INTEGER*)&ticksPerSecond));
+    assert(::QueryPerformanceCounter((LARGE_INTEGER*)&prevTime));
 	
 	winrt::init_apartment();
 	
@@ -37,14 +44,19 @@ void Application::StartMainLoop() {
 	
 	// simple window management, single-threaded
 	while(true) {
+		INT64 curTime;
+		::QueryPerformanceCounter((LARGE_INTEGER*)&curTime);
+		double deltaTime = (double)(curTime - prevTime) / ticksPerSecond;
+		prevTime = curTime;
+		
 		if(!AppTick())
 			break;
 
 		for(auto& win : activeWindows_) {
-			win->Tick(0.);
+			win->Tick(deltaTime);
 		}
 
-		Tick(0.);
+		Tick(deltaTime);
 	}
 }
 

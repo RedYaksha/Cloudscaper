@@ -9,6 +9,7 @@
 #include "shader_types.h"
 
 class Resource;
+struct DescriptorConfiguration;
 
 template<typename T>
 concept IsResource = requires {
@@ -16,7 +17,27 @@ concept IsResource = requires {
 };
 
 template<typename T>
+concept IsDescriptorConfiguration = requires {
+    std::derived_from<T, DescriptorConfiguration>;
+};
+
+template<typename T>
 concept IsValidIndexBufferType = IsAnyOf<T, uint8_t, uint16_t, uint32_t, unsigned int>;
+
+
+enum class DescriptorConfigType {
+    Texture2D_UAV,
+    Texture3D_UAV,
+
+    NumDescriptorConfigTypes,
+};
+
+struct DescriptorConfiguration {
+    DescriptorConfiguration(DescriptorConfigType type)
+        : configType(type) {}
+
+    DescriptorConfigType configType; 
+};
 
 class Resource {
 public:
@@ -39,7 +60,7 @@ public:
 
 // public facing descriptor creation, which internally calls the implementation version and will execute properly if
 // the resource type supports the descriptor type
-#define DEFINE_CREATE_DESCRIPTOR_FUNC(name) bool Create ## name ##(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) const { winrt::com_ptr<ID3D12Device> device; res_->GetDevice(__uuidof(ID3D12Device), device.put_void()); return Create ## name ## Implementation(cpuHandle, device); }
+#define DEFINE_CREATE_DESCRIPTOR_FUNC(name) bool Create ## name ##(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, std::shared_ptr<DescriptorConfiguration> configData = nullptr) const { winrt::com_ptr<ID3D12Device> device; res_->GetDevice(__uuidof(ID3D12Device), device.put_void()); return Create ## name ## Implementation(cpuHandle, device, configData); }
     DEFINE_CREATE_DESCRIPTOR_FUNC(ShaderResourceView)
     DEFINE_CREATE_DESCRIPTOR_FUNC(UnorderedAccessView)
     DEFINE_CREATE_DESCRIPTOR_FUNC(ConstantBufferView)
@@ -48,7 +69,9 @@ public:
     DEFINE_CREATE_DESCRIPTOR_FUNC(DepthStencilView)
 #undef DEFINE_CREATE_DESCRIPTOR_FUNC
     
-    bool CreateDescriptorByResourceType(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, ResourceDescriptorType descriptorType) const;
+    bool CreateDescriptorByResourceType(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                        ResourceDescriptorType descriptorType,
+                                        std::shared_ptr<DescriptorConfiguration> configData) const;
 
     virtual bool IsUploadNeeded() const { return false; };
     virtual bool IsDynamic() const { return false; }
@@ -61,7 +84,9 @@ public:
 protected:
 // all derived children (specific type of resource) is responsible for implementing one (or more) of these so users can
 // create descriptors from their resources.
-#define DEFINE_CREATE_DESCRIPTOR_IMPL_FUNC(name) virtual bool Create ## name ## Implementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, winrt::com_ptr<ID3D12Device> device) const { return false; }
+#define DEFINE_CREATE_DESCRIPTOR_IMPL_FUNC(name) virtual bool Create ## name ## Implementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, winrt::com_ptr<ID3D12Device> device, std::shared_ptr<DescriptorConfiguration> configData) const { \
+    WINRT_ASSERT("Not implemented!" && false); return false; }
+    
     DEFINE_CREATE_DESCRIPTOR_IMPL_FUNC(ShaderResourceView)
     DEFINE_CREATE_DESCRIPTOR_IMPL_FUNC(UnorderedAccessView)
     DEFINE_CREATE_DESCRIPTOR_IMPL_FUNC(ConstantBufferView)
@@ -91,9 +116,16 @@ public:
     Texture2D(DXGI_FORMAT format, uint32_t width, uint32_t height, bool useAsUAV, D3D12_RESOURCE_STATES initialState);
     
     D3D12_RESOURCE_DESC CreateResourceDesc() const override;
-    bool CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, winrt::com_ptr<ID3D12Device> device) const override;
-    bool CreateUnorderedAccessViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, winrt::com_ptr<ID3D12Device> device) const override;
+    bool CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                winrt::com_ptr<ID3D12Device> device,
+                                                std::shared_ptr<DescriptorConfiguration> configData) const override;
     
+    bool CreateUnorderedAccessViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                 winrt::com_ptr<ID3D12Device> device,
+                                                 std::shared_ptr<DescriptorConfiguration> configData) const override;
+
+    uint32_t GetWidth() const { return width_; }
+    uint32_t GetHeight() const { return height_; }
 protected:
     Texture2D() = default;
 
@@ -110,6 +142,7 @@ public:
     virtual void HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList);
     virtual void SetUploadResource(winrt::com_ptr<ID3D12Resource> res);
     winrt::com_ptr<IWICBitmapFrameDecode> GetWICFrame() const;
+    uint32_t GetBitsPerPixel(REFGUID guid) const;
 
     void FreeSourceData();
 private:
@@ -127,7 +160,9 @@ public:
 
 
 protected:
-    bool CreateRenderTargetViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, winrt::com_ptr<ID3D12Device> device) const override;
+    bool CreateRenderTargetViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                              winrt::com_ptr<ID3D12Device> device,
+                                              std::shared_ptr<DescriptorConfiguration> configData) const override;
 };
 
 enum class DepthBufferFormat {
@@ -145,7 +180,9 @@ public:
     bool GetOptimizedClearValue(D3D12_CLEAR_VALUE& clearVal) const override;
 protected:
     
-    bool CreateDepthStencilViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, winrt::com_ptr<ID3D12Device> device) const override;
+    bool CreateDepthStencilViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                              winrt::com_ptr<ID3D12Device> device,
+                                              std::shared_ptr<DescriptorConfiguration> configData) const override;
 };
 
 class Buffer : public Resource {
@@ -155,7 +192,12 @@ public:
         return desc;
     }
 
+    bool CreateConstantBufferViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                winrt::com_ptr<ID3D12Device> device,
+                                                std::shared_ptr<DescriptorConfiguration> configData) const override;
+
 protected:
+    
     virtual const void* GetSourceData() const = 0;
     virtual uint64_t GetSizeInBytes() const = 0;
     virtual uint64_t GetStrideInBytes() const = 0;
@@ -176,9 +218,9 @@ private:
 };
 
 
-class DynamicBuffer : public Buffer {
+class DynamicBufferBase : public Buffer {
 public:
-    DynamicBuffer(uint32_t resourceSizeInBytes)
+    DynamicBufferBase(uint32_t resourceSizeInBytes)
         : resourceSizeInBytes_(resourceSizeInBytes) {}
 
     D3D12_RESOURCE_DESC CreateResourceDesc() const override;
@@ -189,7 +231,7 @@ public:
     void UpdateGPUData();
     
 protected:
-    DynamicBuffer() = default;
+    DynamicBufferBase() = default;
     
     uint32_t resourceSizeInBytes_;
 };
@@ -255,7 +297,33 @@ private:
 };
 
 template <typename T>
-class DynamicVertexBuffer : public VertexBufferBase, public DynamicBuffer {
+class DynamicBuffer : public DynamicBufferBase {
+public:
+    DynamicBuffer(const T& source)
+        : source_(source) {
+        resourceSizeInBytes_ = sizeof(T);
+    }
+
+protected:
+    const void* GetSourceData() const override {
+        return static_cast<const void*>(&source_);
+    }
+
+    uint64_t GetSizeInBytes() const override {
+        return sizeof(T);
+    }
+    
+    uint64_t GetStrideInBytes() const override {
+        return sizeof(T);
+    }
+    
+private:
+    const T& source_;
+};
+
+// TODO: really, this is just a DynamicArrayBuffer, that has a vertex layout
+template <typename T>
+class DynamicVertexBuffer : public VertexBufferBase, public DynamicBufferBase {
 public:
 
     DynamicVertexBuffer(const std::vector<T>& source, VertexBufferLayout layout, VertexBufferUsage usage, D3D_PRIMITIVE_TOPOLOGY topology)
@@ -331,4 +399,48 @@ private:
     const std::vector<T>& source_;
 };
 
+class Texture3D : public Resource {
+public:
+    struct UAVConfig : public DescriptorConfiguration {
+        UAVConfig(uint32_t mip_slice, uint32_t first_depth_slice, uint32_t depth_size)
+            : DescriptorConfiguration(DescriptorConfigType::Texture3D_UAV),
+              mipSlice(mip_slice),
+              firstDepthSlice(first_depth_slice),
+              depthSize(depth_size) {}
+
+        uint32_t mipSlice;
+        uint32_t firstDepthSlice;
+        uint32_t depthSize;
+    };
+    
+    Texture3D(DXGI_FORMAT format,
+              uint32_t width,
+              uint32_t height,
+              uint32_t depth,
+              bool useAsUAV,
+              uint32_t numMips,
+              D3D12_RESOURCE_STATES initialState);
+    
+    D3D12_RESOURCE_DESC CreateResourceDesc() const override;
+    bool CreateShaderResourceViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                winrt::com_ptr<ID3D12Device> device,
+                                                std::shared_ptr<DescriptorConfiguration> configData) const override;
+    
+    bool CreateUnorderedAccessViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                 winrt::com_ptr<ID3D12Device> device,
+                                                 std::shared_ptr<DescriptorConfiguration> configData) const override;
+
+    uint32_t GetWidth() const { return width_; }
+    uint32_t GetHeight() const { return height_; }
+    uint32_t GetDepth() const { return depth_; }
+
+protected:
+    DXGI_FORMAT format_;
+    uint32_t width_;
+    uint32_t height_;
+    uint32_t depth_;
+    uint32_t numMips_;
+    bool useAsUAV_;
+    
+};
 #endif // RENDERER_RESOURCES_H_

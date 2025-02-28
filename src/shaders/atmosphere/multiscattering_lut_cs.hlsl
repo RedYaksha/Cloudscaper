@@ -25,6 +25,7 @@ struct ComputeShaderInput
 RWTexture2D<float4> multiscatteringLUT : register(u0);
 Texture2D<float4> transmittanceLUT : register(t0);
 ConstantBuffer<AtmosphereContext> atmosphere : register(b0);
+ConstantBuffer<SkyBuffer> gSky : register(b1);
 
 SamplerState lutSampler : register(s0);
 
@@ -35,7 +36,7 @@ SamplerState lutSampler : register(s0);
 
 //
 //
-void IntegrateLuminanceAndEnergyTransfer(float3 rayOrigin, float rayDir, out float3 integratedLuminance, out float3 integratedEnergyTransfer) {
+void IntegrateLuminanceAndEnergyTransfer(float3 rayOrigin, float3 rayDir, out float3 integratedLuminance, out float3 integratedEnergyTransfer) {
     
     const float numSamples = NUM_MULTISCATTER_INTEGRATION_STEPS;
     
@@ -165,7 +166,7 @@ void IntegrateLuminanceAndEnergyTransfer(float3 rayOrigin, float rayDir, out flo
 
 
 [RootSignature( MultiScatteringLUT_RootSignature )]
-[numthreads(32, 32, 1)] // define the cells in a thread group
+[numthreads(THREAD_COUNT_X, THREAD_COUNT_Y, THREAD_COUNT_Z)] 
 void main( ComputeShaderInput IN ) {
     const uint3 Cell = IN.DispatchThreadID;
 
