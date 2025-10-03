@@ -71,36 +71,18 @@ float rand3d(float3 x) {
     return frac(sin(dot(x, float3(12, 67, 411))) * 42123.);
 }
 
+// "Remaps" a value in one range into another range
 float Remap(float Val, float OldMin, float OldMax, float NewMin, float NewMax) {
     float p = (Val - OldMin) / (OldMax - OldMin);
     return NewMin + p * (NewMax - NewMin);
 }
 
-float sdBox( float3 p, float3 b )
-{
-    float3 q = abs(p) - b;
-    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
-}
-
-float sdSphere( float3 p, float r) {
-    return length(p) - r;
-}
-
-float StratusDensityHeight(float h) {
-    float2 Range1 = float2(0.01, 0.02);
-    float P1 = clamp((h - Range1.x) / (Range1.y - Range1.x), 0., 1.);
-    float V1 = lerp(0., 1., P1);
-    
-    float2 Range2 = float2(0.09, 0.1);
-    float P2 = clamp((h - Range2.x) / (Range2.y - Range2.x), 0., 1.);
-    float V2 = lerp(1., 0., P2);
-
-    return V1 * V2;
-}
-
 // Get the blended density gradient for 3 different cloud types
-// relativeHeight is normalized distance from inner to outer atmosphere shell
-// cloudType is read from cloud placement blue channel
+// - relativeHeight is normalized distance from inner to outer atmosphere shell
+// - cloudType is read from cloud placement blue channel
+//      - meaning, "cloud type" is being controlled by a separate texture and not manually by a cpu-side variable
+//
+// This can also be defined as pre-baked "curves".
 float CloudLayerDensity(float relativeHeight, float cloudType) {
     relativeHeight = clamp(relativeHeight, 0, 1);
     
@@ -144,8 +126,6 @@ float HeightBiasCoverage(float coverage, float height) {
 }
 
 float GetCloudDensityByPos(float3 Pos, float3 sampleOffset, bool HighQuality, int mip) {
-    mip = 0;
-    
     float posRadius = length(Pos);
     const float heightFraction = GetHeightFraction(length(Pos));
     if(heightFraction > 1 || heightFraction < 0) {
@@ -162,7 +142,11 @@ float GetCloudDensityByPos(float3 Pos, float3 sampleOffset, bool HighQuality, in
 
     const float2 weatherRadius = cloudParams.weatherRadius; // float2(500,500); // km
     const float2 weatherUV = (samplePos.xy + float2(150, 0) + weatherRadius / 2.) / weatherRadius;
-    
+
+    // This weather texture tells us
+    // - different cloud types in the world,
+    // - density scalars (maybe for rain clouds)
+    // - etc.
     const float3 weatherData = weatherTexture.SampleLevel(Sampler, weatherUV, 0).rgb;
     
     float4 Noises = CloudModelNoise.SampleLevel(Sampler, samplePos * modelScale, mip);
@@ -171,16 +155,26 @@ float GetCloudDensityByPos(float3 Pos, float3 sampleOffset, bool HighQuality, in
     float PerlinWorley = Noises.r;
     float BaseCloud = Remap(PerlinWorley, LowFreqFBM - 1., 1.0, 0.0, 1.0);
 
+    // Based on the altitude of the sample, we can determine which "cloud type" we want
+    //
+    // It's important to note that all we're doing is changing the way we sample the data (the noise)
+    // based on altitude, and current weather patterns (according to the weatherTexture).
+    // Changing the way we sample the source data, we can directly control how the clouds get formed.
+    // "How they get formed" directly corresponds to: the sampled densities (values from 0 to 1)
+    // when we're doing the ray marching
     BaseCloud *= CloudLayerDensity(heightFraction, weatherData.b);
 
-    //float CloudCoverage = HeightBiasCoverage(heightFraction, min(cloudParams.minWeatherCoverage, weatherData.r)); //);weatherData.r; // min(cloudParams.minWeatherCoverage, weatherData.r); //min(0.8, weatherData.r); //cloudParams.cloudCoverage; // + rand3d(Pos) * 0.3;smoothstep(0.4, 0.8, BaseCloud_2); //0.9; //Remap(Noises2.z, 0, 1, 0.8, 0.93);
     float CloudCoverage = HeightBiasCoverage(min(cloudParams.minWeatherCoverage, weatherData.r), heightFraction); //);weatherData.r; // min(cloudParams.minWeatherCoverage, weatherData.r); //min(0.8, weatherData.r); //cloudParams.cloudCoverage; // + rand3d(Pos) * 0.3;smoothstep(0.4, 0.8, BaseCloud_2); //0.9; //Remap(Noises2.z, 0, 1, 0.8, 0.93);
     
     float BaseCloudWithCoverage = Remap(BaseCloud, CloudCoverage, 1.0, 0.0, 1.0);
     BaseCloudWithCoverage *= CloudCoverage;
 
     float FinalCloud = BaseCloudWithCoverage;
-    
+
+    // We "append" a different noise to add more detail in the cloud if it's asked for
+    // Since texture samples are expensive, (ideally) this should only occur for samples closer
+    // to the camera. Additionally we might want to skip the detailed noise when doing the
+    // "inner light ray march"
     if(HighQuality) {
         float3 HighFreqNoises = CloudDetailNoise.SampleLevel(Sampler, samplePos * highFreqScale, 0).rgb;
 
@@ -190,38 +184,6 @@ float GetCloudDensityByPos(float3 Pos, float3 sampleOffset, bool HighQuality, in
             1.0 - HighFreqFBM, saturate(heightFraction * highFreqHeightFractionScale));
 
         FinalCloud = Remap(BaseCloudWithCoverage, HighFreqNoiseModifier * highFreqRemapScale, 1.0, 0.0, 1.0);
-    }
-
-    return saturate(FinalCloud);
-}
-
-float GetCloudDensity(float3 UVW, bool HighQuality) {
-    
-    float4 Noises = CloudModelNoise.Sample(Sampler, UVW * 6.5);
-    float4 Noises2 = CloudModelNoise.Sample(Sampler, float3(UVW.x * 0.09, UVW.y * 0.07, UVW.z * 0.1));
-
-    float LowFreqFBM = Noises.g * 0.625 + Noises.b * 0.25 + Noises.a * 0.125;
-    float PerlinWorley = Noises.r;
-    float BaseCloud = Remap(PerlinWorley, LowFreqFBM - 1., 1.0, 0.0, 1.0);
-
-    BaseCloud *= DensityHeight(UVW.z);
-    //BaseCloud *= StratusDensityHeight(UVW.z);
-
-    float CloudCoverage = smoothstep(0.88, 0.96, Noises2.b); // Remap(Noises2.r, 0, 1, 0.8, 0.93);
-    float BaseCloudWithCoverage = Remap(BaseCloud, CloudCoverage, 1.0, 0.0, 1.0);
-    BaseCloudWithCoverage *= CloudCoverage;
-
-    float FinalCloud = BaseCloudWithCoverage;
-    if(HighQuality) {
-        float3 HighFreqNoises = CloudDetailNoise.Sample(Sampler, float3(UVW * 5.5)).rgb;
-
-        float HighFreqFBM = HighFreqNoises.r * 0.625 + HighFreqNoises.g * 0.25 + HighFreqNoises.b * 0.125;
-        float HeightFraction = UVW.z;
-
-        float HighFreqNoiseModifier = lerp(HighFreqFBM,
-            1.0 - HighFreqFBM, saturate(HeightFraction * 10.0f));
-
-        FinalCloud = Remap(BaseCloudWithCoverage, HighFreqNoiseModifier * 0.2, 1.0, 0.0, 1.0);
     }
 
     return saturate(FinalCloud);
@@ -246,6 +208,16 @@ float3 U2Tone(float3 x) {
 
 float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyColor, out float3 finalTransmittance) {
     const float3 RANDOM_VECTORS[6] = {float3( 0.38051305f,  0.92453449f, -0.02111345f),float3(-0.50625799f, -0.03590792f, -0.86163418f),float3(-0.32509218f, -0.94557439f,  0.01428793f),float3( 0.09026238f, -0.27376545f,  0.95755165f),float3( 0.28128598f,  0.42443639f, -0.86065785f),float3(-0.16852403f,  0.14748697f,  0.97460106f)};
+
+    // ===== start ray definition logic =======
+    
+    // Context:
+    // Given our ray that we're about to march through (in round-world),
+    // we are marching through only a subset of the atmosphere (where we define
+    // clouds to be seen). This implies this ray is going through a "spherical shell".
+    // "spherical shell is the three-dimensional region between two concentric spheres of different radii"
+    //
+    // The logic below is trying to figure out where the ray march should start and end.
     
     const float numSamples = cloudParams.numSamples;
     const float Rb = 6360;
@@ -296,7 +268,16 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
     
     const float maxSampleLength = cloudParams.beersScale.w;
     raySampleLength = min(raySampleLength, maxSampleLength);
+    
+    // ===== end ray definition logic =======
 
+    // Now that we have the length of the ray: we can define
+    // what is our "step delta". This is purely opinionated,
+    // but has significant impact on how the cloud densities are sampled.
+    //
+    // E.g. very small step sizes may completely miss a big cloud that is visible
+    // 3km away. Whereas big step sizes have the chance of skipping a thin cloud entirely.
+    // It's a balancing act.
     float stepSize;
     if(cloudParams.fixedDt) {
         stepSize = cloudParams.lodThresholds.x; // * (OUTER_SHELL_RADIUS - INNER_SHELL_RADIUS) / numSamples; //;raySampleLength / numSamples;
@@ -356,13 +337,18 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
     
     t += stepSize * rayOffset;
 
-#if 1 
+    // extinction is the "absorption" of each cloud particle.
+    // The more extinction => the "denser" each cloud particle => the darker it can get
     const float extinction = cloudParams.extinction;
     const float scattering = extinction / 2.;
 
     // pos to light
     const float3 lightDir = normalize(cloudParams.lightDir); //normalize(float3(0, -1, 1.));
 
+    // Phase describes how light is going to bounce off each "cloud particle" we're going
+    // to march through. Combining 2 phase functions is claimed to be "more realistic"
+    // which is what's happening here. The final miePhase variable is directly used in
+    // the final light calculation per march.
     const float cosTheta_lv = dot(-lightDir, -rayDir);
     const float miePhase1 = MiePhaseApproximation_HenyeyGreenstein(cosTheta_lv, -0.2);
     const float miePhase2 = MiePhaseApproximation_HenyeyGreenstein(cosTheta_lv, 0.9);
@@ -370,11 +356,10 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
 
     const float lightAlpha = saturate(dot(lightDir, float3(0,0,1)));
 
-    int largeDtThreshold = 6; //(int) cloudParams.lightColor.y;
+    int largeDtThreshold = 6; 
     int ogLargeDtThreshold = largeDtThreshold;
-    int numDensityZero = 0; //largeDtThreshold + 1;
+    int numDensityZero = 0; 
     int totalPositiveDensity = 0;
-    
     
     // state to skip
     bool skip = false;
@@ -390,9 +375,11 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
         const bool isSearching = numDensityZero > largeDtThreshold;
 
         float uniformDt = stepSize; //lerp(start, end, alpha);
-        
+
+        // blue-noise breaks up "banding artifacts" when we sample, this is purely for
+        // dealing with visual artifacts and not a core part of the cloud rendering technique.
+        // For learning purposes, assume that blueRand isn't doing anything important.
         float blueRand = blueNoise.SampleLevel(Sampler, cloudParams.beersScale.x * (rayOrigin + t * rayDir).xy, 0).r;
-        //blueRand = frac(blueRand + frac(renderContext.time) * 0.61803398875f);
         if(!cloudParams.useBlueNoise) {
             blueRand = 0;
         }
@@ -401,41 +388,50 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
         largeDt = largeDtBase; //largeDtBase * maxT; //pow(cloudParams.lodThresholds.y, numDensityZero); //clamp(numDensityZero, 0, largeDtThreshold));
         largeDt += largeDt * blueRand;
 
+        // To skip over empty space, we dynamically change the step delta to be large
+        // If we're currently detecting there are no clouds (i.e. we've only been sampling 0s for
+        // cloud density), then we make the step delta large.
+        // If we're currently IN a cloud (cloud density > 0), then we continue with our "smaller" step sizes.
         const float dt = isSearching? largeDt: uniformDt + uniformDt * blueRand;
-        t += dt;
+        t += dt; // t is: "how far along the ray are we?"
 
+        // maxT is the end of our ray. If we reached the end, then reachedEnd signifies we shouldn't
+        // be calculating any lighting/color anymore.
+        //
+        // We DO NOT break like in normal cpu-side programming because there are many instances of this
+        // shader being ran currently, in lock-step. The more similar the logic is per instance, the
+        // more performant this shader will be.
         if(t > maxT) {
             reachedEnd = true;
         }
 
+        // No more light is passing through all the cloud particles we sampled. So we've already
+        // reached our "final color"
         if(transmittance.x < .01) {
             reachedEnd = true;
         }
 
-        //const float newT = minT + raySampleLength * (i + rayOffset) / numSamples + dtScale;
-        //const float dt = abs(newT - t);
-        //t = newT;
-
         const float3 samplePos = rayOrigin + t * rayDir;
-
-        if(length(samplePos) < Rb) {
-            // reachedEnd = true;
-        }
         
         const float3 sampleOffset = cloudParams.windSpeed * renderContext.time * cloudParams.windDir;
 
         const float4 b = cloudParams.beersScale;
         // int mip = t > b.x? 2 : t > b.y? 1 : 0;
         // int mip = isSearching? 1 : alpha > 0.5? 2 : 1;
+
         int mip = 0;
+        
+        // Here we sample the "noise" 3D textures based on where we currently are in the world
         const float density = GetCloudDensityByPos(samplePos, sampleOffset, !isSearching, mip);
         prevDensity = density;
 
+        // We're currently not in a cloud, let's keep track of that
         if(density <= 0.01) {
             numDensityZero++; //= max(largeDtThreshold, numDensityZero + 1);
         }
 
-        if(density > 0) {
+        // We're in a cloud!
+        if(density > 0.01) {
             
             if(isSearching) {
                 skip = true;
@@ -447,7 +443,11 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
             
             const float3 sampleTransmittance = exp(-1. * (extinction * density * dt));
 
-            // integrate light ray
+            // ==== start light ray calculations
+            //
+            // Sample densities towards the light source to figure out how "lit"
+            // this piece of the cloud is. This is one of the biggest factors in
+            // why this technique can get expensive. 
             const float lightDistToOuter = GetNearestRaySphereDistance(samplePos, lightDir, float3(0,0,0), outerShellRadius);
             const float lightDistToInner = GetNearestRaySphereDistance(samplePos, lightDir, float3(0,0,0), innerShellRadius);
 
@@ -460,84 +460,78 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
             }
             
             const float numLightSamples = 6.;
-            const float lightSampleLength = cloudParams.beersScale.z; //dt * cloudParams.beersScale.z;
+            const float lightSampleLength = cloudParams.beersScale.z; // not actually "beersScale", just needed a quick way to tune values
             float lightT = 0.0;
             float lightDensity = 0.0;
-            // float light_dt = cloudParams.beersScale.z * maxLightLen / numLightSamples;
             float light_dt = lightSampleLength / numLightSamples;
+            
+            // ==== end light ray calculations
 
             for(float j = 0.; j < numLightSamples; j += 1.) {
                 const float newLightT = lightSampleLength * (j + 0.1) / numLightSamples;
                 const float lightDt = abs(newLightT - lightT);
                 lightT += lightDt;
 
+                // The usage of RANDOM_VECTORS is to sample in a "cone" instead of linearly
+                // towards the sun.
                 const float3 lightSamplePos = samplePos + lightT * (lightDir + RANDOM_VECTORS[j] * j);
-                // const float3 lightSamplePos = samplePos + light_dt * j * lightDir;
                 
                 const float curLightDensity = GetCloudDensityByPos(lightSamplePos, sampleOffset, j < 3, mip);
                 lightDensity += curLightDensity;
             }
 
-            /*
-            {
-                const float newLightT = lightSampleLength * 3.0;
-                const float lightDt = abs(newLightT - lightT);
-                lightT += lightDt;
-
-                const float3 lightSamplePos = samplePos + lightT * (lightDir + RANDOM_VECTORS[0]);
-                const float curLightDensity = GetCloudDensityByPos(lightSamplePos, sampleOffset, false, mip);
-                lightDensity += curLightDensity;
-            }
-            */
-
-            const float ldt = light_dt; //lightSampleLength / numLightSamples;
+            // ===== start light contribution =====
+            //
+            // The following uses cloud density and the samples we took towards the sun
+            // to figure out how "lit" this piece of the cloud is and how much of that light
+            // will be transferred back to the eye. This is where "Phase" 
+            // 
+            const float ldt = light_dt;
             const float cd = lightDensity * ldt * extinction;
             
             const float beers = max(exp(-1 * cd), 0.7 * exp(-1 * 0.25 * cd));
             const float powShug = 2. * (1.0 - exp(-1 * cd * 2.0));
-
-            //const float lightTransmittance = exp(-1 * cloudParams.lightColor.y * lightDensity); // * lightDensity); // beers * powShug;j < 3
             float lightTransmittance = beers * powShug;
-            //lightTransmittance += blueRand * 0.3;
             
-            const float3 lightColor = cloudParams.lightColor;
-            // const float3 curL = lightColor * (lightTransmittance * miePhase * scattering * density) * dt;
-            
-           // const float mp = MiePhaseApproximation_HenyeyGreenstein(dot(sunToPos, -rayDir), cloudParams.phaseG);
-            //const float mp = MiePhaseApproximation_HenyeyGreenstein(dot(sunToPos, -rayDir), cloudParams.phaseG);
             float r_alpha = GetHeightFraction(length(samplePos));
 
+            // Ambient here is the simplest form of "Multiscattering"
+            // The SkyAtmosphere technique (which is not in this shader) is supposed to define a
+            // 3D texture in which we can query "truer" multiscattering values. I was to lazy too
+            // implement that. So here we are with a simple ambient scalar.
             float ambientMax = lerp(0.01, 10, lightAlpha);
             float3 ambient = cloudParams.beersScale.y * lerp(0.0, ambientMax, (r_alpha + 0.1));
 
             const float lightLuminance = lerp(0.001, 1, lightAlpha);
             
-            //const float3 curL = (ambient + skyColor * cloudParams.beersScale.w + lightLuminance * (lightTransmittance * miePhase) * scattering) * density;
             const float3 curL = (ambient + skyColor * 1.5 + lightLuminance * (lightTransmittance * miePhase) * scattering) * density;
 
-            const float3 stMax = exp(-1. * (cloudParams.beersScale.w * extinction * dt));
-            float3 st = sampleTransmittance; //max(sampleTransmittance, stMax);
-            const float3 intS = (curL - curL * st);// / (density);
+            float3 st = sampleTransmittance;
 
+            // Simplified and more accurate integration by Sebastian Hillaire
+            const float3 intS = (curL - curL * st);
+            
+            // ===== end light contribution =====
+
+            // Only modify L if we need to
             if(!skip && !reachedEnd && radianceValid) {
                 L += intS * transmittance;
-                // L += lightColor;
-                //float c = saturate(cos(dot(rayDir, lightDir)));
-                //L += transmittance * lerp(RED, BLUE, c);
                 transmittance *= sampleTransmittance;
             }
             skip = false;
         }
     }
-#endif
 
     finalTransmittance = transmittance;
-    //L = float3(1,1,1) * transmittance;
     
     return L;
 }
 
 float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
+    // This first part is to only render 1/4 of the scene each frame.
+    // This is done because ray marching is so expensive. While doing
+    // partial renders per frame is much more performant,
+    // it comes with its own drawbacks - especially visually.
     const int bayerFilter[16] = {
          0,  8,  2, 10,
         12,  4, 14,  6,
@@ -545,30 +539,10 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
         15,  7, 13,  5
     };
 
-    static const float4 colors[16] =
-    {
-        float4(1.0, 0.0, 0.0, 1.0),  // Red
-        float4(0.0, 1.0, 0.0, 1.0),  // Green
-        float4(0.0, 0.0, 1.0, 1.0),  // Blue
-        float4(1.0, 1.0, 0.0, 1.0),  // Yellow
-        float4(1.0, 0.0, 1.0, 1.0),  // Magenta
-        float4(0.0, 1.0, 1.0, 1.0),  // Cyan
-        float4(1.0, 0.5, 0.0, 1.0),  // Orange
-        float4(0.6, 0.2, 0.8, 1.0),  // Purple
-        float4(0.0, 0.5, 0.5, 1.0),  // Teal
-        float4(0.5, 0.0, 0.5, 1.0),  // Dark Magenta
-        float4(0.5, 0.5, 0.5, 1.0),  // Gray
-        float4(0.3, 0.3, 1.0, 1.0),  // Light Blue
-        float4(0.8, 0.2, 0.2, 1.0),  // Dark Red
-        float4(0.2, 0.8, 0.2, 1.0),  // Dark Green
-        float4(0.8, 0.8, 0.8, 1.0),  // Light Gray
-        float4(0.2, 0.2, 0.2, 1.0)   // Dark Gray
-    };
-
     int2 iscreen_pos = int2(screen_pos.xy);
     int index = renderContext.frame % 16;
-    //int iCoord = (iscreen_pos.x + 4* iFragCoord.y) % BAYER_LIMIT;
-    
+
+    // 
     bool update = (((iscreen_pos.x + 4 * iscreen_pos.y) % 16)
             == bayerFilter[index]);
 
@@ -576,51 +550,29 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
     float2 uv = (screen_pos.xy + float2(uvOffset, uvOffset)) /
                 renderContext.screenSize;
 
-    /*
+    // If we shouldn't update, then we should copy values from a previous frame.
     if(!update) {
         // float4 prevFrameVal = prevFrame.SampleLevel(prevFrameSampler, uv, 0);
         float4 prevFrameVal = prevFrame.Load(int3(screen_pos.x, screen_pos.y, 0));
         return float4(prevFrameVal.rgb, prevFrameVal.a);
     }
-    */
 
-    // return float4(blueNoise.SampleLevel(prevFrameSampler, uv, 0).rgb, 0);
-    
     // dx12, screen_pos (0,0) is top left and (1,1) is bottom right.
     // However, we want (0,0) to be bottom left and (1,1) to be top right
     // We can do this by inverting y (ie remap using 1-y => y=1  ("bottom") is remapped to 0 ("top"), and vice versa)
     float ar = (float) renderContext.screenSize.x / (float) renderContext.screenSize.y;
-
-    float2 oguv = uv;
     uv.y = 1.0f - uv.y; // invert y
-    
     uv.xy -= 0.5;
-    
     uv.x *= ar;
 
-    // float3 ro = float3(0,-23.,32.);
-    float3 ro = float3(0,0,0.1) + float3(0,0,6360); // in km
-    float3 fwd = normalize(float3(0., 1., 0.4325));
-    float3 right = normalize(cross(fwd, float3(0,0,1)));
-    float3 up = normalize(cross(right, fwd));
-    
     const float3 ndc = float3(uv.x, uv.y, 1.0);
     const float4 viewPos = mul(renderContext.invProjectionMat, float4(ndc, 1.0));
     const float3 rayDir = normalize(mul((float3x3) renderContext.invViewMat, viewPos.xyz / viewPos.w));
     const float3 worldPos = renderContext.cameraPos + float3(0., 0., 6360.);
 
-    float3x3 lookAt = float3x3(
-        right.x, fwd.x, up.x,
-        right.y, fwd.y, up.y,
-        right.z, fwd.z, up.z
-    );
-    
-    float3 rd = mul(lookAt, normalize(float3(uv.x, 1.0, uv.y)));
-
-
-
     float3 skyColor = 0.0;
     {
+        // querying the color of the sky, using the world position
         float3 queryDir = cloudParams.lightDir;
         
         const float r = length(worldPos);
@@ -645,24 +597,31 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
     float alpha;
 
     float rayOffset = blueNoise.Sample(Sampler, uv).r;
-    //rayOffset = frac(rayOffset + frac(renderContext.time) * 0.61803398875f);
     if(!cloudParams.useBlueNoise) {
         rayOffset = 0;
     }
-    
-    // const float3 CloudColor = VolumetricMarch(worldPos, rayDir, rayOffset, alpha);
+
+    // Transmittance here is being used as:
+    // "how much light is able to pass through the clouds", as a percentage
+    // And this value is directly correlated to the densities of the clouds
+    // E.g. a very dense cloud will be completely opaque, no light from the background will "go through"
+    // it, so all light is blocked by the clouds which implies a transmittance of 0.
     float3 transmittance;
     const float3 CloudColor = CloudMarch(worldPos, rayDir, rayOffset, skyColor, transmittance);
     alpha = transmittance.x;
 
-    if(cloudParams.useAlpha == 0) {
-        float a = alpha > 0? 1. : 0.;
-        alpha = a;
-    }
-
+    // HDR/Tonemapping
+    // https://learnopengl.com/Advanced-Lighting/HDR
     float gamma = 2.2;
     float3 mapped = float3(1,1,1) - exp(-CloudColor * 3.0);
     mapped = pow(mapped, 1.0 / gamma);
-    
+
+    // NOTE: "alpha" here is being used in a different way than the normal alpha == 1 => completely opaque.
+    // The final clouds scene is being displayed on top of the previous sky scene via the following combination
+    //
+    // final_color = old_color * (new_alpha) + new_color * (1 - new_alpha)
+    //
+    // So a fully opaque cloud is going to have alpha == 0. While no clouds is going to have alpha == 1.
+    // This is just implementation details and not related to the actual cloud rendering technique.
     return float4(mapped, alpha);
 }
