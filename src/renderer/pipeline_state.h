@@ -108,7 +108,6 @@ private:
     std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>> samplerMaps_;
     std::vector<PipelineResourceMap<D3D12_SAMPLER_DESC>> staticSamplerMaps_;
 
-    RenderTargetGroupID rtGroupId_;
     ResourceID depthId_;
 
     std::optional<D3D12_BLEND_DESC> blendDesc_;
@@ -121,7 +120,8 @@ public:
     GraphicsPipelineState(std::string id)
     : PipelineState(id, PipelineStateType::Graphics),
       rootSignaturePriorityShader_(ShaderType::Vertex),
-    numInstances_(1)
+    numInstances_(1),
+    renderTargetConfigInd_(0)
     {}
 
     void GetShaders(std::vector<std::weak_ptr<Shader>>& outVec) const override;
@@ -132,6 +132,14 @@ public:
     void SetNumInstances(uint32_t numInstances) { numInstances_ = numInstances; }
 
     void InitializeVertexAndIndexBufferDescriptors();
+
+    void SetRenderTargetConfigurationIndex(uint32_t ind) {
+        WINRT_ASSERT(ind >= 0 && ind < GetNumRenderTargetConfigurations());
+        renderTargetConfigInd_ = ind;
+    }
+    
+    RenderTargetGroupID GetCurrentRenderTargetGroupID() const { return rtGroupIds_[renderTargetConfigInd_]; }
+    uint32_t GetNumRenderTargetConfigurations() const { return renderTargetMaps_.size(); }
 
 private:
     friend Renderer;
@@ -145,7 +153,8 @@ private:
     std::map<uint16_t, std::weak_ptr<class VertexBufferBase>> vertexBufferMap_;
     std::weak_ptr<class IndexBufferBase> indexBuffer_;
     
-    std::map<uint16_t, std::weak_ptr<RenderTargetHandle>> renderTargetMap_;
+    std::vector<std::map<uint16_t, std::weak_ptr<RenderTargetHandle>>> renderTargetMaps_;
+    std::vector<RenderTargetGroupID> rtGroupIds_;
 
     std::map<uint16_t, DXGI_FORMAT> renderTargetFormats_;
     DXGI_FORMAT depthBufferFormat_;
@@ -160,6 +169,7 @@ private:
     std::optional<uint32_t> numVertices_;
     
     ShaderType rootSignaturePriorityShader_;
+    uint32_t renderTargetConfigInd_;
 };
 
 class ComputePipelineState : public PipelineState {

@@ -75,7 +75,7 @@ ninmath::Vector2f TextInput::ComputeDesiredSize() const {
     };
 }
 
-void TextInput::OnKeyPressed(KeyEvent e) {
+void TextInput::OnKeyPressed(const KeyEvent& e) {
     if(!isFocused_) {
         return;
     }

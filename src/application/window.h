@@ -32,6 +32,8 @@ enum MouseButton {
 
 struct MouseButtonEvent {
     MouseButton btn;
+    int posX; // relative to window pos
+    int posY; // relative to window pos
 };
 
 typedef std::function<void(MouseEvent e)> MouseMoveCallback;
@@ -68,6 +70,10 @@ private:
     bool isAlive_;
     std::string name_;
     HWND hwnd_;
+
+    int mostRecentMouseX_;
+    int mostRecentMouseY_;
+    bool mousePosSet_;
 };
 
 #endif // APPLICATION_WINDOW_H_

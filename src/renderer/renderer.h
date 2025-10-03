@@ -101,10 +101,15 @@ public:
 
 
     const RootConstantValue<ninmath::Vector2f>& GetScreenSizeRootConstantValue() const { return screenSizeRCV_; }
+    
     const ninmath::Vector2f GetScreenSize() const {
-        auto v = screenSizeRCV_.GetValue();
+        ninmath::Vector2f v = screenSizeRCV_.GetValue();
         return { v.x, v.y };
     }
+
+    std::shared_ptr<RenderTarget> CreateRenderTarget(ResourceID id, DXGI_FORMAT format, bool useAsUAV, D3D12_RESOURCE_STATES state);
+
+    std::shared_ptr<RenderTarget> GetCurrentSwapChainBufferResource() const;
     
 private:
     Renderer(HWND hwnd, RendererConfig config, HRESULT& hr);
@@ -112,12 +117,14 @@ private:
 
     std::weak_ptr<PipelineState> FinalizeGraphicsPipelineBuild(const GraphicsPipelineBuilder& builder);
     std::weak_ptr<PipelineState> FinalizeComputePipelineBuild(const ComputePipelineBuilder& builder);
-    bool CreateRenderTargetDescriptorAllocation(const RenderTargetGroupID& id);
+    bool CreateRenderTargetDescriptorAllocation(const RenderTargetGroupID& id, bool isSwapChain);
     
     // called in InitializeMemoryAllocator<T>
     void OnMemoryAllocatorSet();
 
     void InitializeDefaultDepthBuffers();
+
+    void PrepareGraphicsPipelineRenderTargets(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList, std::shared_ptr<GraphicsPipelineState> pso);
 
 
     uint32_t clientWidth_;
@@ -167,6 +174,8 @@ private:
     std::unordered_map<ResourceID,
                        std::vector<std::weak_ptr<class DescriptorHeapAllocation>>> depthBufferAllocMap_;
 
+    std::set<RenderTargetGroupID> curFrameRenderTargetsReset_;
+    
     // TODO: custom non-render target resource (e.g. UAV) where there's 1 allocation per swap chain buffer
 
     RendererConfig config_;

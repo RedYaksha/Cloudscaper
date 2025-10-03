@@ -1,6 +1,7 @@
 ﻿#ifndef APPLICATION_APPLICATION_H_
 #define APPLICATION_APPLICATION_H_
 
+#define NOMINMAX
 #include <windows.h>
 #include <winrt/windows.foundation.h>
 #include <vector>

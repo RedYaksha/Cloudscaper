@@ -16,7 +16,15 @@ void Text::Render(double deltaTime, UIFrameworkBatcher& batcher) const {
     ninmath::Vector2f baseScreenPos = {px + padding_.l, py + padding_.t};
     ninmath::Vector2f clipPos = baseScreenPos;
     ninmath::Vector2f clipSize = {textWidth_, textHeight_};
+
+    // ninmath::Vector4f color = isHovered_? ninmath::Vector4f {0,0,0,1} : foregroundColor_;
     batcher.AddText(baseScreenPos, foregroundColor_, fontSize_, text_.value(), clipPos, clipSize);
+
+    /*
+    ninmath::Vector2f hitBoxPos = GetHitboxPosition();
+    ninmath::Vector2f hitBoxSize = GetHitboxSize();
+    batcher.AddQuad(hitBoxPos, hitBoxSize, ninmath::Vector4f {0,1,0,1});
+    */
 }
 
 ninmath::Vector2f Text::ComputeDesiredSize() const {

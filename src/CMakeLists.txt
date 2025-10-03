@@ -48,6 +48,7 @@ set( SOURCE_FILES
 set( HEADER_FILES 
 # renderer
     renderer/renderer.h
+    renderer/renderer_common.h
     renderer/pipeline_builder.h
     renderer/pipeline_state.h
     renderer/resources.h
@@ -118,6 +119,10 @@ set( SHADER_FILES
     shaders/cloudscapes/raymarch_quad_ps.hlsl
     shaders/cloudscapes/raymarch_quad_vs.hlsl
     shaders/cloudscapes/texture_3d_mip_maps_cs.hlsl
+    
+# compute_effects
+    shaders/compute_effects/gaussian_blur_cs.hlsl
+    shaders/compute_effects/taa_cs.hlsl
     
 # common
     shaders/common/math.hlsl

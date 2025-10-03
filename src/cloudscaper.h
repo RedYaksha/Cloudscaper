@@ -1,11 +1,14 @@
 #ifndef CLOUDSCAPER_CLOUDSCAPER_H_
 #define CLOUDSCAPER_CLOUDSCAPER_H_
 
+#define NOMINMAX
+
 #include "application.h"
 #include "resources.h"
 #include "root_constant_value.h"
 #include "ninmath/ninmath.h"
 #include "ui/widgets/labeled_numeric_input.h"
+#include "ui/widgets/slider.h"
 #include "ui/widgets/text.h"
 #include "ui/widgets/vertical_layout.h"
 
@@ -128,7 +131,8 @@ private:
     std::shared_ptr<UIFramework> uiFramework_;
     std::shared_ptr<MemoryAllocator> memAllocator_;
     RootConstantValue<float> testConstVal_;
-    
+
+	
     RootConstantValue<ninmath::Vector2f> screenSizeRCV_;
 
 	// atmosphere resources
@@ -149,12 +153,21 @@ private:
     std::weak_ptr<Texture3D> detailNoise_;
     std::weak_ptr<RenderTarget> cloudRT0_;
     std::weak_ptr<RenderTarget> cloudRT1_;
+	std::weak_ptr<RenderTarget> blurOutRT_;
+	std::weak_ptr<RenderTarget> mainRT_;
+
+	float blurRad_;
+	RootConstantValue<float> blurRadRootConstant_;
+	RootConstantValue<int> taaCurInd_;
 	
 	// clouds
     std::weak_ptr<PipelineState> computeModelNoiseCPSO_;
     std::weak_ptr<PipelineState> computeDetailNoiseCPSO_;
     std::weak_ptr<PipelineState> gen3DMipMapsCPSO_;
     std::weak_ptr<PipelineState> renderCloudsGPSO_;
+    std::weak_ptr<PipelineState> gaussianBlurCPSO_;
+    std::weak_ptr<PipelineState> copyCloudsToMainCPSO_;
+    std::weak_ptr<PipelineState> cloudsTAACPSO_;
 	
 
 	bool noiseGenDone_;
@@ -166,6 +179,13 @@ private:
 	std::shared_ptr<Text> text_;
 	std::shared_ptr<LabeledNumericInput<float>> testFloatInput_;
 	std::vector<std::shared_ptr<Widget>> paramNumericInputs_;
+	float testSliderVal_;
+	std::shared_ptr<Slider<float>> testSlider_;
+	std::shared_ptr<Slider<float>> lightDirSlider_;
+	std::shared_ptr<Slider<float>> camSpinSlider_;
+	ninmath::Vector3f camPos_;
+	float lightDirAngle_;
+	float camSpinAngle_;
 };
 
 

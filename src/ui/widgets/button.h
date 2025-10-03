@@ -25,7 +25,7 @@ public:
     void SetText(std::string text, float fontSize);
     void SetOnPressed(OnPressedCallback callback) { onPressedCallback_ = callback; }
     
-    void OnPressed() override;
+    void OnPressed(const MouseButtonEvent& e) override;
     
 private:
     ninmath::Vector4f hoverColor_;

@@ -53,9 +53,7 @@ void Button::SetText(std::string text, float fontSize) {
     fontSize_ = fontSize;
 }
 
-void Button::OnPressed() {
-    Widget::OnPressed();
-
+void Button::OnPressed(const MouseButtonEvent& e) {
     if(onPressedCallback_.has_value()) {
         onPressedCallback_.value()();
     }

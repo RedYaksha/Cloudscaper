@@ -65,7 +65,7 @@ public:
         TextInput::OnInitialized();
     }
     
-    void OnKeyPressed(KeyEvent e) override;
+    void OnKeyPressed(const KeyEvent& e) override;
     void OnFocused() override;
     void OnUnfocused() override;
 
@@ -99,7 +99,7 @@ private:
 
 
 template <IsNumber T>
-void NumericInput<T>::OnKeyPressed(KeyEvent e) {
+void NumericInput<T>::OnKeyPressed(const KeyEvent& e) {
     if(!isFocused_) {
         return;
     }

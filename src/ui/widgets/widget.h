@@ -77,10 +77,12 @@ public:
 
     virtual void OnMouseEnter() {}
     virtual void OnMouseLeave() {}
-    virtual void OnPressed() {}
+    virtual void OnMouseMoved(const MouseEvent& e) {}
+    virtual void OnPressed(const MouseButtonEvent& e) {}
+    virtual void OnReleased(const MouseButtonEvent& e) {}
     virtual void OnClicked() {}
-    virtual void OnKeyPressed(KeyEvent c) {}
-    virtual void OnKeyReleased(KeyEvent c) {}
+    virtual void OnKeyPressed(const KeyEvent& c) {}
+    virtual void OnKeyReleased(const KeyEvent& c) {}
     virtual void OnFocused() {}
     virtual void OnUnfocused() {}
 

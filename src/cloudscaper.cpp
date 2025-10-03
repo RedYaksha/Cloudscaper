@@ -70,10 +70,15 @@ Cloudscaper::Cloudscaper(HINSTANCE hinst)
     atmosphereContext_ = { 6360.f, 6460.f };
     atmosphereContextBuffer_ = memAllocator_->CreateResource<DynamicBuffer<AtmosphereContext>>("Atmosphere Context", atmosphereContext_);
 
+    
+
+    ninmath::Vector3f lightDir = ninmath::Vector3f(0, 1, 0.9).Normal();
+    lightDirAngle_ = 0;
+
     skyContext_ = {
         .cameraPos = {0,0,0.1}, // in km
         .pad0 = 0,
-        .lightDir = {0,0,1.0},
+        .lightDir = lightDir,
         .pad1 = 0,
         .viewDir = {0,0,0}, // not used
         .pad2 = 0,
@@ -90,35 +95,34 @@ Cloudscaper::Cloudscaper(HINSTANCE hinst)
 
     cloudParameters_.lightColor = ninmath::Vector3f(1,1,1);
     cloudParameters_.phaseG = 0.5f;
-    cloudParameters_.modelNoiseScale = 0.9f;
+    cloudParameters_.modelNoiseScale = 0.55f;
     cloudParameters_.cloudCoverage = 0.88f;
-    cloudParameters_.highFreqScale = 0.85f;
-    cloudParameters_.highFreqModScale = 0.8f;
-    cloudParameters_.highFreqHFScale = 4.0f;
-    cloudParameters_.largeDtScale = .04f;
+    cloudParameters_.highFreqScale = 0.15f;
+    cloudParameters_.highFreqModScale = 0.3f;
+    cloudParameters_.highFreqHFScale = 10.0f;
+    cloudParameters_.largeDtScale = 2.5f;
     cloudParameters_.extinction = 10.0f;
-    cloudParameters_.beersScale = {0.5,0.2,1.,0.08};
+    cloudParameters_.beersScale = {0.5,0.2,0.2,0.08};
 	
-    cloudParameters_.numSamples = 256;
+    cloudParameters_.numSamples = 128;
 
-    cloudParameters_.weatherRadius = {150, 150};
+    cloudParameters_.weatherRadius = {700, 700};
 	
-    cloudParameters_.minWeatherCoverage = 0.18;
+    cloudParameters_.minWeatherCoverage = 0.6;
     cloudParameters_.useBlueNoise = 1;
     cloudParameters_.fixedDt = 1;
-    cloudParameters_.lodThresholds = {0.2, 1.1, 0.1, .5};
+    cloudParameters_.lodThresholds = {0.5, 1.1, 1.1, .5};
     cloudParameters_.useAlpha = 1;
     cloudParameters_.windDir = {-1, 0, -0.3};
     cloudParameters_.windSpeed = 0.;
 	
     cloudParameters_.innerShellRadius = 1.5;
-    cloudParameters_.outerShellRadius= 5.0;
+    cloudParameters_.outerShellRadius= 7.0;
 
-    cloudParameters_.lightDir = ninmath::Vector3f(0,0,1).Normal();
+    cloudParameters_.lightDir = lightDir;
 
     cloudParametersBuffer_ = memAllocator_->CreateResource<DynamicBuffer<CloudParameters>>("Cloud Parameters", cloudParameters_);
     
-
     rootWidget_ = uiFramework_->CreateWidget<VerticalLayout>("Root widget");
     rootWidget_->SetGap(15);
     rootWidget_->SetMargin({5, 2.5});
@@ -136,19 +140,46 @@ Cloudscaper::Cloudscaper(HINSTANCE hinst)
 
 #define AddFloatInput(name) addFloatInput(#name, cloudParameters_. ## name);
     AddFloatInput(modelNoiseScale);
-    AddFloatInput(cloudCoverage);
     AddFloatInput(highFreqScale);
     AddFloatInput(highFreqModScale);
     AddFloatInput(highFreqHFScale);
-    AddFloatInput(largeDtScale);
     AddFloatInput(extinction);
-    AddFloatInput(minWeatherCoverage);
-    AddFloatInput(weatherRadius.x);
-    AddFloatInput(weatherRadius.y);
+
+    blurRad_ = 0;
+    blurRadRootConstant_.SetValue(blurRad_);
+    
+    addFloatInput("blur radius", blurRad_);
+
+    AddFloatInput(largeDtScale);
+    AddFloatInput(lodThresholds.x);
+    AddFloatInput(beersScale.y);
+    AddFloatInput(beersScale.z);
+    AddFloatInput(windSpeed);
+
 #undef AddFloatInput
+
+    camPos_ = ninmath::Vector3f {0,0,0.02};
+
+    testSliderVal_ = 1;
+    testSlider_ = uiFramework_->CreateWidget<Slider<float>>("slider", camPos_.z);
+    testSlider_->SetForegroundColor(ninmath::Vector4f{1,1,0,1});
+    testSlider_->SetRange(0.1, 150);
+
+    lightDirSlider_ = uiFramework_->CreateWidget<Slider<float>>("light dir slider", lightDirAngle_);
+    lightDirSlider_->SetForegroundColor(ninmath::Vector4f{1,1,0,1});
+    lightDirSlider_->SetRange(0, std::numbers::pi * 2);
+    
+    camSpinSlider_ = uiFramework_->CreateWidget<Slider<float>>("cam spin slider", camSpinAngle_);
+    camSpinSlider_->SetForegroundColor(ninmath::Vector4f{1,1,0,1});
+    camSpinSlider_->SetRange(0, std::numbers::pi * 2);
+    
+    rootWidget_->AddChild(testSlider_, HorizontalAlignment::Left);
+    rootWidget_->AddChild(lightDirSlider_, HorizontalAlignment::Left);
+    rootWidget_->AddChild(camSpinSlider_, HorizontalAlignment::Left);
     
     rootWidget_->AddChild(text_, HorizontalAlignment::Left);
-    
+
+    mainRT_ = renderer_->CreateRenderTarget("main_rt", DXGI_FORMAT_R8G8B8A8_UNORM, true, D3D12_RESOURCE_STATE_COMMON);
 
     // testConstVal_ = RootConstantValue<int>(0);
     testConstVal_.SetValue(0.5);
@@ -193,7 +224,10 @@ Cloudscaper::Cloudscaper(HINSTANCE hinst)
         .CBV(atmosphereContextBuffer_, 0, ResourceBindMethod::RootDescriptor)
         .CBV(skyContextBuffer_, 1, ResourceBindMethod::RootDescriptor)
         .CBV(renderContextBuffer_, 2, ResourceBindMethod::RootDescriptor)
-        .UseDefaultRenderTarget()
+        .RenderTargetConfiguration(0,
+        RenderTargetConfiguration()
+            .RenderTarget("main_rt", 0)
+        )
         .Build();
 
     // clouds
@@ -252,7 +286,12 @@ Cloudscaper::Cloudscaper(HINSTANCE hinst)
     cloudsBlendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
     cloudsBlendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
     cloudsBlendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+
+    cloudRT0_ = renderer_->CreateRenderTarget("RT0", DXGI_FORMAT_R8G8B8A8_UNORM, true, D3D12_RESOURCE_STATE_COMMON);
+    cloudRT1_ = renderer_->CreateRenderTarget("RT1", DXGI_FORMAT_R8G8B8A8_UNORM, true, D3D12_RESOURCE_STATE_COMMON);
+    blurOutRT_ = renderer_->CreateRenderTarget("Blur Output", DXGI_FORMAT_R8G8B8A8_UNORM, true, D3D12_RESOURCE_STATE_COMMON);
     
+
     renderCloudsGPSO_ =
         renderer_->BuildGraphicsPipeline("Clouds Render")
         .VertexShader("shaders/vertex_shader.hlsl")
@@ -264,24 +303,72 @@ Cloudscaper::Cloudscaper(HINSTANCE hinst)
         .SRV(blueNoise_, 2)
         .SRV(weatherTexture_, 3)
         .SRV(skyViewLUT_, 4)
-
-        /*
-        .SRV(cloudRT0_, 5) // prevFrame
-        .ResourceConfiguration(1,
-            ResourceConfiguration()
-            .SRV(cloudRT1_, 5) // prevFrame
-        )
-        */
+    
     
         .CBV(renderContextBuffer_, 0, ResourceBindMethod::RootDescriptor)
         .CBV(cloudParametersBuffer_, 1, ResourceBindMethod::RootDescriptor)
-        .StaticSampler(renderer_common::samplerLinearClamp, 0)
+    
+        .SRV(cloudRT1_, 5) // render to 0 => prevFrame is 1
+        .ResourceConfiguration(1,
+            ResourceConfiguration()
+            .SRV(cloudRT0_, 5) // render to 1 => prevFrame is 0
+        )
+    
+        .StaticSampler(renderer_common::samplerLinearWrap, 0)
+        .StaticSampler(renderer_common::samplerPointClamp, 1)
         .BlendState(cloudsBlendDesc)
-        .UseDefaultRenderTarget()
+        .RenderTargetConfiguration(0,
+            RenderTargetConfiguration()
+            .RenderTarget("RT0", 0)
+        )
+        .RenderTargetConfiguration(1,
+            RenderTargetConfiguration()
+            .RenderTarget("RT1", 0)
+        )
+        .Build();
+
+    copyCloudsToMainCPSO_ =
+        renderer_->BuildComputePipeline("copy clouds to main")
+        .ComputeShader("shaders/cloudscapes/blend_with_main_render_target_cs.hlsl")
+        .ResourceConfiguration(0,
+            ResourceConfiguration()
+            .UAV(cloudRT0_, 0)
+            .UAV(mainRT_, 1)
+        )
+        .ResourceConfiguration(1,
+            ResourceConfiguration()
+            .UAV(cloudRT1_, 0)
+            .UAV(mainRT_, 1)
+        )
+        .SyncThreadCountsWithTexture2DSize(mainRT_)
         .Build();
     
-
+    gaussianBlurCPSO_ =
+        renderer_->BuildComputePipeline("blur cloud rt")
+        .ComputeShader("shaders/compute_effects/gaussian_blur_cs.hlsl")
+        .ResourceConfiguration(0,
+            ResourceConfiguration()
+            .SRV(cloudRT0_, 0)
+            .UAV(blurOutRT_, 0)
+            .RootConstant(blurRadRootConstant_, 0)
+        )
+        .ResourceConfiguration(1,
+            ResourceConfiguration()
+            .SRV(cloudRT1_, 0)
+            .UAV(blurOutRT_, 0)
+            .RootConstant(blurRadRootConstant_, 0)
+        )
+        .SyncThreadCountsWithTexture2DSize(mainRT_)
+        .Build();
     
+    cloudsTAACPSO_ =
+        renderer_->BuildComputePipeline("taa cloud")
+        .ComputeShader("shaders/compute_effects/taa_cs.hlsl")
+        .UAV(cloudRT0_, 0)
+        .UAV(cloudRT1_, 1)
+        .RootConstant(taaCurInd_, 0)
+        .SyncThreadCountsWithTexture2DSize(mainRT_)
+        .Build();
     
     // Renderer Thoughts
     /*
@@ -518,24 +605,41 @@ void Cloudscaper::Tick(double deltaTime) {
     winrt::com_ptr<ID3D12GraphicsCommandList> cmdList = renderer_->StartCommandList(hr);
     HandleHRESULT(hr);
 
+    blurRadRootConstant_.SetValue(blurRad_);
+    
     ninmath::Vector2f screenSize = renderer_->GetScreenSize();
     float aspectRatio = screenSize.x / screenSize.y;
 
-    ninmath::Vector3f camPos = {0, 0, 1};
-    
+    ninmath::Vector3f camFwd = ninmath::Vector3f {
+        std::sin(camSpinAngle_),
+        std::cos(camSpinAngle_),
+        0
+    };
+
     auto perspMat = ninmath::PerspectiveProjectionMatrix4x4_RH_ZUp_ForwardY_HFOV(aspectRatio, 90, 0.1, 1000, 0, 1);
-    auto viewMat = ninmath::LookAtViewMatrix_RH_ZUp(camPos, {0, 1, 0});
+    auto viewMat = ninmath::LookAtViewMatrix_RH_ZUp(camPos_, camFwd);
     
     renderContext_.screenSize = { (uint32_t) screenSize.x, (uint32_t) screenSize.y };
     renderContext_.invProjectionMat = perspMat.Inverse();
     renderContext_.invViewMat = viewMat.Inverse();
-    renderContext_.cameraPos = camPos;
+    renderContext_.cameraPos = camPos_;
     renderContext_.frame = curFrame_;
     renderContext_.time = elapsedTime_;
+
+    ninmath::Vector3f lightDir = ninmath::Vector3f {
+        0,
+        std::sin(lightDirAngle_),
+        std::cos(lightDirAngle_),
+    };
+
+    cloudParameters_.lightDir = lightDir;
+    skyContext_.lightDir = lightDir;
+
     renderContextBuffer_.lock()->UpdateGPUData();
     cloudParametersBuffer_.lock()->UpdateGPUData();
+    skyContextBuffer_.lock()->UpdateGPUData();
 
-    text_->SetText(std::to_string(elapsedTime_));
+    text_->SetText(std::to_string(curFrame_));
 
     renderer_->Tick(deltaTime);
     uiFramework_->Tick(deltaTime);
@@ -544,6 +648,9 @@ void Cloudscaper::Tick(double deltaTime) {
     renderer_->ExecutePipeline(cmdList, multiScatteringCPSO_.lock());
     renderer_->ExecutePipeline(cmdList, skyviewCPSO_.lock());
     renderer_->ExecutePipeline(cmdList, renderSkyGPSO_.lock());
+    
+    std::shared_ptr<RenderTarget> swapChainRes_ = renderer_->GetCurrentSwapChainBufferResource();
+    const bool usingFrame0 = (curFrame_ % 2) == 0;
 
     if(computeModelNoiseCPSO_.lock()->IsReadyAndOk() && computeDetailNoiseCPSO_.lock()->IsReadyAndOk()) {
         if(!noiseGenDone_) {
@@ -558,13 +665,56 @@ void Cloudscaper::Tick(double deltaTime) {
             noiseGenDone_ = true;
         }
         else {
+            std::shared_ptr<GraphicsPipelineState> cloudsGPSO = std::static_pointer_cast<GraphicsPipelineState>(renderCloudsGPSO_.lock());
+            cloudsGPSO->SetResourceConfigurationIndex(usingFrame0? 0 : 1);
+            cloudsGPSO->SetRenderTargetConfigurationIndex(usingFrame0? 0 : 1);
+
+            D3D12_RESOURCE_STATES shaderResState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            if(usingFrame0) {
+                cloudRT1_.lock()->ChangeStateDirect(shaderResState, cmdList);
+                cloudRT0_.lock()->ChangeStateDirect(D3D12_RESOURCE_STATE_RENDER_TARGET, cmdList);
+            }
+            else {
+                cloudRT0_.lock()->ChangeStateDirect(shaderResState, cmdList);
+                cloudRT1_.lock()->ChangeStateDirect(D3D12_RESOURCE_STATE_RENDER_TARGET, cmdList);
+            }
+
             renderer_->ExecutePipeline(cmdList, renderCloudsGPSO_.lock());
+
+            if(usingFrame0) {
+                cloudRT0_.lock()->ChangeStateDirect(shaderResState, cmdList);
+            }
+            else {
+                cloudRT1_.lock()->ChangeStateDirect(shaderResState, cmdList);
+            }
+
+            taaCurInd_.SetValue(usingFrame0? 0 : 1);
+            //renderer_->ExecutePipeline(cmdList, cloudsTAACPSO_.lock());
+            
+
+            blurOutRT_.lock()->ChangeStateDirect(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, cmdList);
+
+            gaussianBlurCPSO_.lock()->SetResourceConfigurationIndex(usingFrame0? 0 : 1);
+            renderer_->ExecutePipeline(cmdList, gaussianBlurCPSO_.lock());
+
+            mainRT_.lock()->ChangeStateDirect(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, cmdList);
+
+            copyCloudsToMainCPSO_.lock()->SetResourceConfigurationIndex(usingFrame0? 0 : 1);
+            renderer_->ExecutePipeline(cmdList, copyCloudsToMainCPSO_.lock());
         }
     }
 
+    swapChainRes_->ChangeStateDirect(D3D12_RESOURCE_STATE_COPY_DEST, cmdList);
+    mainRT_.lock()->ChangeStateDirect(D3D12_RESOURCE_STATE_COPY_SOURCE, cmdList);
+
     // TODO: 
     // copy cloud render target to final frame
-    
+    cmdList->CopyResource(swapChainRes_->GetNativeResource().get(),
+                          mainRT_.lock()->GetNativeResource().get());
+
+    // already done in Renderer::FinishCommandList
+    swapChainRes_->ChangeStateDirect(D3D12_RESOURCE_STATE_PRESENT, cmdList);
+    mainRT_.lock()->ChangeStateDirect(D3D12_RESOURCE_STATE_RENDER_TARGET, cmdList);
 
     uiFramework_->Render(deltaTime, cmdList);
     

@@ -89,10 +89,28 @@ public:
         return *this;
     }
 
+private:
+    friend class PipelineBuilderBase;
+    
     PipelineResourceMap<ResourceInfo> resMap_;
     PipelineResourceMap<RootConstantInfo> constantMap_;
     PipelineResourceMap<D3D12_SAMPLER_DESC> samplerMap_;
     PipelineResourceMap<D3D12_SAMPLER_DESC> staticSamplerMap_;
+};
+
+class RenderTargetConfiguration {
+public:
+    RenderTargetConfiguration() = default;
+
+    RenderTargetConfiguration& RenderTarget(ResourceID id, uint16_t slotIndex) {
+        WINRT_ASSERT(!renderTargetMap_.contains(slotIndex));
+        renderTargetMap_.insert({slotIndex, id});
+        return *this;
+    }
+    
+private:
+    friend class GraphicsPipelineBuilder;
+    std::map<uint16_t, ResourceID> renderTargetMap_;
 };
 
 class PipelineBuilderBase {
@@ -297,9 +315,11 @@ public:
         return *this;
     }
 
-    GraphicsPipelineBuilder& RenderTarget(ResourceID renderTargetId, uint16_t slotIndex) {
-        WINRT_ASSERT(!renderTargetMap_.contains(slotIndex));
-        renderTargetMap_.insert({slotIndex, renderTargetId});
+    GraphicsPipelineBuilder& RenderTargetConfiguration(uint32_t configIndex, RenderTargetConfiguration config) {
+        WINRT_ASSERT(configIndex == curRtConfigIndex_ + 1);
+        curRtConfigIndex_++;
+
+        renderTargetMaps_.push_back(config.renderTargetMap_);
         return *this;
     }
 
@@ -329,7 +349,8 @@ private:
     :
     PipelineBuilderBase(id),
     buildFunc_(buildFunc),
-    rootSignaturePriorityShader_(ShaderType::Vertex)
+    rootSignaturePriorityShader_(ShaderType::Vertex),
+    curRtConfigIndex_(-1)
     {}
         
     BuildFunction buildFunc_;
@@ -343,10 +364,17 @@ private:
 
     ShaderType rootSignaturePriorityShader_;
 
+    // std::map needed for sorted order of keys
     std::map<uint16_t, std::weak_ptr<class VertexBufferBase>> vertexBufferMap_;
+    
     std::weak_ptr<class IndexBufferBase> indexBuffer_;
-    std::map<uint16_t, ResourceID> renderTargetMap_;
+    
+    // std::map needed for sorted order of keys
+    std::vector<std::map<uint16_t, ResourceID>> renderTargetMaps_;
+    
     std::optional<D3D12_BLEND_DESC> blendDesc_;
+
+    uint32_t curRtConfigIndex_;
 };
 
 class ComputePipelineBuilder : public PipelineBuilderBase {

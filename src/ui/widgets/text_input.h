@@ -10,7 +10,7 @@ public:
     void Tick(double deltaTime) override;
     void Render(double deltaTime, UIFrameworkBatcher& batcher) const override;
     ninmath::Vector2f ComputeDesiredSize() const override;
-    void OnKeyPressed(KeyEvent e) override;
+    void OnKeyPressed(const KeyEvent& e) override;
     void OnInitialized() override;
     
     void SetText(std::string text);

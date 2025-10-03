@@ -196,17 +196,22 @@ void UIFramework::Tick(double deltaTime) {
             const ninmath::Vector2f hitboxPos = widget->GetHitboxPosition();
             const ninmath::Vector2f hitboxSize = widget->GetHitboxSize();
             const ninmath::Vector2f mousePos = ninmath::Vector2f {(float) e.posX, (float) e.posY};
+
             const bool mouseIsInHitbox = ninmath::IsPointInAxisAlignedRect(mousePos, hitboxPos, hitboxSize);
             const bool widgetIsHovered = widget->IsHovered();
             
             if(mouseIsInHitbox && !widgetIsHovered) {
                 widget->SetIsHovered(true);
+                std::cout << "Mouse Enter: " << widget->GetID() << std::endl;
                 widget->OnMouseEnter();
             }
             else if(!mouseIsInHitbox && widgetIsHovered) {
+                std::cout << "Mouse Leave: " << widget->GetID() << std::endl;
                 widget->SetIsHovered(false);
                 widget->OnMouseLeave();
             }
+
+            widget->OnMouseMoved(e);
 
             mostRecentMousePos_.x = e.posX;
             mostRecentMousePos_.y = e.posY;
@@ -217,7 +222,7 @@ void UIFramework::Tick(double deltaTime) {
 
             if(e.btn == MouseButton::Left) {
                 if(widget->IsHovered()) {
-                    widget->OnPressed();
+                    widget->OnPressed(e);
                     widget->SetIsPressed(true);
 
                     if(widget->IsFocusable() && !widget->IsFocused()) {
@@ -240,6 +245,7 @@ void UIFramework::Tick(double deltaTime) {
             if(e.btn == MouseButton::Left) {
                 if(widget->IsPressed()) {
                     widget->SetIsPressed(false);
+                    widget->OnReleased(e);
                     
                     // TODO: if mouse is still in the widget's hitbox, click()
                     // later... clicking focuses the top-most widget
@@ -260,13 +266,19 @@ void UIFramework::Tick(double deltaTime) {
         }
     }
     
+    if(curFrameEvents_.mouseEvent.has_value()) {
+        MouseEvent& e = curFrameEvents_.mouseEvent.value();
+        mostRecentMousePos_.x = e.posX;
+        mostRecentMousePos_.y = e.posY;
+    }
+    
     curFrameEvents_.Reset();
 }
 
 void UIFramework::OnMouseMoved(MouseEvent e) {
     std::lock_guard<std::mutex> lockGuard(curFrameEventsMutex_);
     curFrameEvents_.mouseEvent = e;
-    //std::cout << "Mouse pos: " << e.posX << ", " << e.posY << std::endl;
+    // std::cout << "Mouse pos: " << e.posX << ", " << e.posY << std::endl;
 }
 
 void UIFramework::OnKeyDown(KeyEvent e) {

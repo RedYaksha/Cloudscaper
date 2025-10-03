@@ -7,7 +7,7 @@
 LRESULT CALLBACK WindowProc2(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 Window::Window(HINSTANCE hinst, std::string windowName)
-: name_(windowName) {
+: name_(windowName), mostRecentMouseX_(0), mostRecentMouseY_(0), mousePosSet_(false) {
 	const wchar_t* className = L"Default Window Class";
 	
 	WNDCLASS wc = {};
@@ -111,12 +111,24 @@ LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 		break;
 	case WM_MOUSEMOVE:
 		{
+			const int curMouseX = GET_X_LPARAM(lParam);
+			const int curMouseY = GET_Y_LPARAM(lParam);
 			MouseEvent e;
-			e.posX = GET_X_LPARAM(lParam);
-			e.posY = GET_Y_LPARAM(lParam);
-			// TODO
-			e.deltaX = 0;
-			e.deltaY = 0;
+			e.posX = curMouseX;
+			e.posY = curMouseY;
+
+			if(mousePosSet_) {
+				e.deltaX = mostRecentMouseX_ - curMouseX;
+				e.deltaY = mostRecentMouseY_ - curMouseY;
+			}
+			else {
+				e.deltaX = 0;
+				e.deltaY = 0;
+			}
+
+			mostRecentMouseX_ = curMouseX;
+			mostRecentMouseY_ = curMouseY;
+			mousePosSet_ = true;
 
 			for(const auto& func : mouseMovedCallbacks_) {
 				func(e);
@@ -128,6 +140,8 @@ LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 		{
 			MouseButtonEvent e;
 			e.btn = MouseButton::Left;
+			e.posX = mostRecentMouseX_;
+			e.posY = mostRecentMouseY_;
 			
 			for(const auto& func : mouseButtonDownCallbacks_) {
 				func(e);
@@ -138,6 +152,8 @@ LRESULT Window::HandleMsg(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 		{
 			MouseButtonEvent e;
 			e.btn = MouseButton::Left;
+			e.posX = mostRecentMouseX_;
+			e.posY = mostRecentMouseY_;
 			
 			for(const auto& func : mouseButtonUpCallbacks_) {
 				func(e);

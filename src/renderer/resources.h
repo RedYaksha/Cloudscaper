@@ -81,6 +81,9 @@ public:
     void ChangeState(D3D12_RESOURCE_STATES newState, std::vector<D3D12_RESOURCE_BARRIER>& barriers);
     void ChangeStateDirect(D3D12_RESOURCE_STATES newState, winrt::com_ptr<ID3D12GraphicsCommandList> cmdList);
 
+    void SetNativeResource(winrt::com_ptr<ID3D12Resource> res) { res_ = res; }
+    void SetIsReady(bool val) { isReady_ = val; }
+
 protected:
 // all derived children (specific type of resource) is responsible for implementing one (or more) of these so users can
 // create descriptors from their resources.
@@ -97,9 +100,7 @@ protected:
     
     friend class MemoryAllocator;
     friend class StaticMemoryAllocator;
-    void SetNativeResource(winrt::com_ptr<ID3D12Resource> res) { res_ = res; }
     virtual void SetUploadResource(winrt::com_ptr<ID3D12Resource> res) { assert(false); }
-    void SetIsReady(bool val) { isReady_ = val; }
     
     winrt::com_ptr<ID3D12Resource> res_;
     D3D12_RESOURCE_STATES state_;
@@ -133,6 +134,7 @@ protected:
     uint32_t width_;
     uint32_t height_;
     bool useAsUAV_;
+    bool useAsRenderTarget_;
 };
 
 class ImageTexture2D : public Texture2D {
@@ -157,6 +159,10 @@ class RenderTarget : public Texture2D {
 public:
     // constructor used for creating a RenderTarget from an already made resource (e.g. swap chain back buffers)
     RenderTarget(winrt::com_ptr<ID3D12Resource> res, D3D12_RESOURCE_STATES initState);
+
+    RenderTarget(DXGI_FORMAT format, uint32_t width, uint32_t height, bool useAsUAV, D3D12_RESOURCE_STATES initialState);
+    RenderTarget(D3D12_RESOURCE_STATES initState);
+    bool GetOptimizedClearValue(D3D12_CLEAR_VALUE& clearVal) const override;
 
 
 protected:

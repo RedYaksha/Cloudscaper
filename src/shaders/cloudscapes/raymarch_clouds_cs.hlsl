@@ -410,6 +410,7 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
 
         if(transmittance.x < .01) {
             reachedEnd = true;
+            transmittance = float3(0,0,0);
         }
 
         //const float newT = minT + raySampleLength * (i + rayOffset) / numSamples + dtScale;
@@ -422,7 +423,7 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
             // reachedEnd = true;
         }
         
-        const float3 sampleOffset = cloudParams.windSpeed * renderContext.time * cloudParams.windDir;
+        const float3 sampleOffset = float3(0,0,0); // cloudParams.windSpeed * renderContext.time * cloudParams.windDir;
 
         const float4 b = cloudParams.beersScale;
         // int mip = t > b.x? 2 : t > b.y? 1 : 0;
@@ -507,13 +508,13 @@ float3 CloudMarch(float3 rayOrigin, float3 rayDir, float rayOffset, float3 skyCo
             //const float mp = MiePhaseApproximation_HenyeyGreenstein(dot(sunToPos, -rayDir), cloudParams.phaseG);
             float r_alpha = GetHeightFraction(length(samplePos));
 
-            float ambientMax = lerp(0.01, 10, lightAlpha);
+            float ambientMax = lerp(0.2, 2, lightAlpha);
             float3 ambient = cloudParams.beersScale.y * lerp(0.0, ambientMax, (r_alpha + 0.1));
 
             const float lightLuminance = lerp(0.001, 1, lightAlpha);
             
-            //const float3 curL = (ambient + skyColor * cloudParams.beersScale.w + lightLuminance * (lightTransmittance * miePhase) * scattering) * density;
-            const float3 curL = (ambient + skyColor * 1.5 + lightLuminance * (lightTransmittance * miePhase) * scattering) * density;
+            // const float3 curL = (ambient + skyColor * cloudParams.beersScale.w + lightLuminance * (lightTransmittance * miePhase) * scattering) * density;
+            const float3 curL = (skyColor + lightLuminance * (lightTransmittance * miePhase) * scattering) * density;
 
             const float3 stMax = exp(-1. * (cloudParams.beersScale.w * extinction * dt));
             float3 st = sampleTransmittance; //max(sampleTransmittance, stMax);
@@ -575,14 +576,11 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
     float uvOffset = 0.;
     float2 uv = (screen_pos.xy + float2(uvOffset, uvOffset)) /
                 renderContext.screenSize;
-
-    /*
+    
     if(!update) {
-        // float4 prevFrameVal = prevFrame.SampleLevel(prevFrameSampler, uv, 0);
-        float4 prevFrameVal = prevFrame.Load(int3(screen_pos.x, screen_pos.y, 0));
+        float4 prevFrameVal = prevFrame.SampleLevel(prevFrameSampler, uv, 0);
         return float4(prevFrameVal.rgb, prevFrameVal.a);
     }
-    */
 
     // return float4(blueNoise.SampleLevel(prevFrameSampler, uv, 0).rgb, 0);
     
@@ -621,7 +619,7 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
 
     float3 skyColor = 0.0;
     {
-        float3 queryDir = cloudParams.lightDir;
+        float3 queryDir = float3(0,0,1);
         
         const float r = length(worldPos);
         const float3 zenith = normalize(worldPos);
@@ -641,7 +639,7 @@ float4 main(PSIn In, float4 screen_pos : SV_Position): SV_Target {
         skyColor = skyViewLUT.Sample(Sampler, skyView_uv).rgb;
         //skyColor = ConvertToSRGB(skyColor);
     }
-
+    
     float alpha;
 
     float rayOffset = blueNoise.Sample(Sampler, uv).r;

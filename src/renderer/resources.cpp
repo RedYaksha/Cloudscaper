@@ -60,7 +60,7 @@ void Resource::ChangeStateDirect(D3D12_RESOURCE_STATES newState, winrt::com_ptr<
 }
 
 Texture2D::Texture2D(DXGI_FORMAT format, uint32_t width, uint32_t height, bool useAsUAV, D3D12_RESOURCE_STATES initialState)
-    : format_(format), width_(width), height_(height), useAsUAV_(useAsUAV) {
+    : format_(format), width_(width), height_(height), useAsUAV_(useAsUAV), useAsRenderTarget_(false) {
     
     isReady_ = false;
     state_ = initialState;
@@ -74,6 +74,10 @@ D3D12_RESOURCE_DESC Texture2D::CreateResourceDesc() const {
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
 
+    if(useAsRenderTarget_) {
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    }
+    
     return desc;
 }
 
@@ -132,6 +136,7 @@ ImageTexture2D::ImageTexture2D(std::string filePath)
     format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
     state_ = D3D12_RESOURCE_STATE_COMMON;
     useAsUAV_ = false;
+    useAsRenderTarget_ = false;
 }
 
 void ImageTexture2D::HandleUpload(winrt::com_ptr<ID3D12GraphicsCommandList> cmdList) {
@@ -292,6 +297,28 @@ void ImageTexture2D::FreeSourceData() {
 RenderTarget::RenderTarget(winrt::com_ptr<ID3D12Resource> res, D3D12_RESOURCE_STATES initState) {
     res_ = res;
     state_ = initState;
+    isReady_ = true;
+}
+
+RenderTarget::RenderTarget(DXGI_FORMAT format, uint32_t width, uint32_t height, bool useAsUAV,
+    D3D12_RESOURCE_STATES initialState)
+        : Texture2D(format, width, height, useAsUAV, initialState) {
+
+    useAsRenderTarget_ = true;
+}
+
+RenderTarget::RenderTarget(D3D12_RESOURCE_STATES initState) {
+    state_ = initState;
+    isReady_ = false;
+}
+
+bool RenderTarget::GetOptimizedClearValue(D3D12_CLEAR_VALUE& clearVal) const {
+    clearVal.Format = (DXGI_FORMAT) format_;
+    clearVal.Color[0] = 0;
+    clearVal.Color[1] = 0;
+    clearVal.Color[2] = 0;
+    clearVal.Color[3] = 1;
+    return true;
 }
 
 bool RenderTarget::CreateRenderTargetViewImplementation(D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
@@ -321,6 +348,7 @@ DepthBuffer::DepthBuffer(DepthBufferFormat format, uint32_t width, uint32_t heig
     height_ = height;
     state_ = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     useAsUAV_ = false;
+    useAsRenderTarget_ = false;
 }
 
 D3D12_RESOURCE_DESC DepthBuffer::CreateResourceDesc() const {

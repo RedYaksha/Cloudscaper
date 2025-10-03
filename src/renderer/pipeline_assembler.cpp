@@ -388,23 +388,23 @@ winrt::com_ptr<ID3D12PipelineState> PipelineAssembler::CreateD3DGraphicsPipeline
         return CD3DX12_SHADER_BYTECODE(blob->GetBufferPointer(), blob->GetBufferSize());
     };
 
-    WINRT_ASSERT(pso->renderTargetMap_.size() > 0);
+    WINRT_ASSERT(pso->renderTargetMaps_.size() > 0);
 
     auto getRenderTargetFormat = [&](uint16_t slotIndex)->DXGI_FORMAT {
-        if(pso->renderTargetMap_.contains(slotIndex)) {
-            return pso->renderTargetMap_.at(slotIndex).lock()->format;
+        if(pso->renderTargetMaps_[0].contains(slotIndex)) {
+            return pso->renderTargetMaps_[0].at(slotIndex).lock()->format;
         }
         return DXGI_FORMAT_UNKNOWN;
     };
 
-    const uint32_t numRenderTargets = pso->renderTargetMap_.size();
+    const uint32_t numRenderTargets = pso->renderTargetMaps_[0].size();
 
     DXGI_FORMAT depthBufferFormat = DXGI_FORMAT_UNKNOWN;
     if(!pso->depthBuffer_.expired()) {
         depthBufferFormat = pso->depthBuffer_.lock()->format;
     }
 
-    const DXGI_SAMPLE_DESC firstSampleDesc = pso->renderTargetMap_.begin()->second.lock()->sampleDesc;
+    const DXGI_SAMPLE_DESC firstSampleDesc = pso->renderTargetMaps_[0].begin()->second.lock()->sampleDesc;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc;
     desc.pRootSignature = rootSig;
@@ -748,7 +748,7 @@ namespace {
                 bool found = false;
                 
                 for(int resMapInd = (int) resConfigIndex; resMapInd >= 0; resMapInd--) {
-                    const PipelineResourceMap<ResourceInfo>& resMap = resMapArr[resConfigIndex];
+                    const PipelineResourceMap<ResourceInfo>& resMap = resMapArr[resMapInd];
                     
                     WINRT_ASSERT(paramToResourceType.contains(rootParam.ParameterType));
 
